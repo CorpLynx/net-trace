@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nettrace"
+version = "0.4.0"
+description = "Read-only, hop-by-hop path tracer across Cisco IOS-XE, PAN-OS, Prisma Access and AWS"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "boto3>=1.34,<2",
+    "click>=8.1,<9",
+    "defusedxml>=0.7,<1",
+    "jmespath>=1.0,<2",
+    "netmiko>=4.3,<5",
+    "ntc-templates>=4.0,<10",
+    "pyyaml>=6.0,<7",
+    "requests>=2.31,<3",
+    "rich>=13.0,<16",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[project.scripts]
+nettrace = "nettrace.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"nettrace.web" = ["static/*.html"]

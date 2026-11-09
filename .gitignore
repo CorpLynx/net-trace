@@ -1,0 +1,34 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.ruff_cache/
+.pytest_cache/
+.screens/
+.DS_Store
+
+# real inventory (the example is tracked); it names devices, accounts and env var names
+inventory.yaml
+inventory.yml
+
+# secrets and key material
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+credentials*.json
+
+# runtime data: discovery cache, audit log, saved traces and maps (can hold device output)
+addresses.json
+topology.json
+audit.log*
+trace*.json
+*.trace.json
+nettrace-*.html
+nettrace-*.svg

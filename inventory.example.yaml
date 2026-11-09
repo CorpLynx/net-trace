@@ -1,0 +1,139 @@
+# nettrace inventory. Copy to inventory.yaml (git-ignored) or point NETTRACE_INVENTORY at it.
+# No secrets go in this file: every credential is read from an environment variable.
+
+trace_timeout: 120                         # optional: overall seconds per trace (CLI: --timeout); expiry = INCOMPLETE
+
+defaults:
+  cisco_iosxe:
+    username_env: NETTRACE_CISCO_USERNAME
+    password_env: NETTRACE_CISCO_PASSWORD
+    secret_env: NETTRACE_CISCO_SECRET      # optional enable secret
+    ssh_strict: true                       # verify SSH host keys (~/.ssh/known_hosts); false only for labs
+  panos:
+    api_key_env: NETTRACE_PANOS_API_KEY
+    verify_tls: true                       # or a path to an existing CA bundle; false here is refused unless
+                                           # NETTRACE_ALLOW_INSECURE_TLS=1 (set it per device for a lab box)
+
+# Panorama. PAN-OS devices with a `serial` are queried THROUGH Panorama (XML API target=<serial>),
+# so firewalls need no reachable management IP of their own. Policy tests always run on the
+# targeted firewall, never on Panorama. `nettrace panorama generate-inventory` prints device entries.
+panorama:
+  host: panorama1.mgmt.example.com
+  peer_host: panorama2.mgmt.example.com   # optional: second Panorama of an HA pair, used if the first is unreachable
+  api_key_env: NETTRACE_PANORAMA_API_KEY
+  verify_tls: true
+  follow_ha_active: true                  # if the listed serial is the HA passive member, query the active peer
+
+devices:
+  - name: core-rtr1
+    platform: cisco_iosxe
+    host: 10.255.0.1
+    site: DC1                              # optional: box label on the path map (default "On-prem")
+    # addresses are optional; `nettrace inventory discover` fills a cache from the devices
+    addresses: [10.0.0.1, 10.0.1.1]
+
+  - name: wan-rtr1
+    platform: cisco_iosxe
+    host: 10.255.0.2
+    vrf: CORP                              # default VRF to use when it can't be learned from the ingress interface
+
+  # Panorama-managed firewall (one entry per HA pair; either member's serial works)
+  - name: fw-dc1
+    platform: panos
+    serial: "001801000001"
+    site: DC1
+    virtual_router: default
+    # routing_engine: advanced            # PAN-OS Advanced Routing (logical routers)
+
+  # Firewall queried directly instead of through Panorama
+  - name: fw-lab
+    platform: panos
+    host: fw-lab.mgmt.example.com
+    via: direct                           # default is panorama when serial + panorama are set
+    # api_key_env: NETTRACE_PANOS_API_KEY_FW_LAB   # per-device key (default NETTRACE_PANOS_API_KEY)
+
+  # VM-Series in AWS, routed mode (VPC route tables point at its ENI)
+  - name: fw-aws-use1-a
+    platform: panos
+    serial: "007900000099"
+    aws:
+      account: network
+      region: us-east-1
+      instance_id: i-0123456789abcdef0
+
+  # VM-Series in AWS behind a Gateway Load Balancer (inline / bump-in-the-wire)
+  - name: fw-aws-gwlb-a
+    platform: panos
+    serial: "007900000100"
+    aws:
+      account: security
+      region: us-east-1
+      instance_id: i-0fedcba9876543210
+      gwlb_endpoints: [vpce-0aaa1111bbbb2222c, vpce-0ddd3333eeee4444f]
+      gwlb_zone: gwlb                      # zone of the GWLB data interface
+      # gwlb_zone_map: {vpce-0aaa1111bbbb2222c: inbound, vpce-0ddd3333eeee4444f: east-west}
+
+# Where on-prem sources live: prefix -> first-hop device
+networks:
+  - prefix: 10.1.0.0/16
+    gateway: core-rtr1
+  - prefix: 10.2.0.0/16
+    gateway: wan-rtr1
+    vrf: CORP
+
+aws:
+  regions: [us-east-1]                     # default for accounts that don't list regions
+  # Account of the base credentials. Roles in any other account must set external_id_env; without
+  # base_account_id nettrace can only warn (it may not call sts:GetCallerIdentity).
+  base_account_id: "111111111111"
+  accounts:
+    - name: network                        # owns the Transit Gateway
+      account_id: "111111111111"
+      role_arn: arn:aws:iam::111111111111:role/NetTraceReadOnly
+      regions: [us-east-1, us-west-2]
+    - name: security
+      account_id: "222222222222"
+      role_arn: arn:aws:iam::222222222222:role/NetTraceReadOnly
+      external_id_env: NETTRACE_AWS_EXTERNAL_ID  # required: role is in another account than the base identity
+    - name: app-prod
+      account_id: "333333333333"
+      role_arn: arn:aws:iam::333333333333:role/NetTraceReadOnly
+      external_id_env: NETTRACE_AWS_EXTERNAL_ID
+    # - name: sandbox
+    #   account_id: "444444444444"
+    #   profile: sandbox-readonly          # use a named profile instead of assume-role
+
+prisma_access:
+  mobile_users:
+    folder: Mobile Users
+    ip_pools: [100.64.0.0/16]
+  remote_networks:
+    folder: Remote Networks
+    networks:
+      - name: branch-012
+        prefixes: [10.50.12.0/24]
+  service_connections:
+    - name: SC-US-East
+      routes: [10.0.0.0/8]                 # prefixes Prisma Access reaches through this service connection
+  zones:
+    users: trust
+    internal: trust
+    internet: untrust
+
+# How domains connect. Each link is bidirectional.
+links:
+  - name: dc1-to-tgw-vpn
+    a: {device: core-rtr1, interface: Tunnel100}
+    b: {aws: {tgw_attachment: tgw-attach-0123456789abcdef0, account: network, region: us-east-1}}
+
+  - name: dc1-to-prisma-sc
+    a: {device: core-rtr1, interface: Tunnel200}
+    b: {prisma_access: {service_connection: SC-US-East}}
+
+  - name: dc1-dx
+    a: {device: wan-rtr1, next_hop: 169.254.50.1}
+    b: {aws: {tgw_attachment: tgw-attach-0fedcba9876543210, account: network, region: us-east-1}}
+
+  - name: dc1-internet                   # traces leaving here end as EXITED "to Internet (ISP-A)"
+    a: {device: fw-dc1, interface: ethernet1/4}
+    b: {external: "Internet (ISP-A)"}
