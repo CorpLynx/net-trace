@@ -614,7 +614,7 @@ function goto(k, animate = true){
 // The path map is at least 900 px wide; in a narrower panel keep the current hop (and the blocking device) in view.
 function centerPathMap(hopIndex){
   const box = $("#pmview"); if (!box || box.scrollWidth <= box.clientWidth) return;
-  const el = hopIndex == null ? null : box.querySelector(`.node[data-hop="${hopIndex}"]`) || box.querySelector(`[data-hop="${hopIndex}"]`);
+  const el = hopIndex == null ? null : box.querySelector(`.node[data-hop="${CSS.escape(String(hopIndex))}"]`) || box.querySelector(`[data-hop="${CSS.escape(String(hopIndex))}"]`);
   if (!el) { box.scrollLeft = box.scrollWidth; return; }
   const b = el.getBoundingClientRect(), v = box.getBoundingClientRect();
   box.scrollLeft += (b.left + b.width / 2) - (v.left + v.width / 2);
@@ -813,7 +813,7 @@ async function refreshHistory(){
   const h = await api("/api/traces").catch(() => []);
   $("#history").innerHTML = h.length ? h.map(x => `<button type="button" class="hist" data-id="${esc(x.id)}" title="${esc(x.outcome)}"><span class="og ${esc(x.outcome)}" aria-hidden="true">${esc(OGLYPH[x.outcome] || "?")}</span><span class="sr">${esc(x.outcome)}</span><span class="lab">${esc(x.created)}</span> <span class="tt">${esc(x.title)}</span></button>`).join("")
     : `<div class="empty" style="padding:0">No traces yet.</div>`;
-  $$("#history .hist").forEach(el => el.onclick = async () => { try { loadEntry(await api("/api/traces/" + el.dataset.id), {autoplay: false, step: "last", fillForm: true}); } catch (e) { toast(e.message); } });
+  $$("#history .hist").forEach(el => el.onclick = async () => { try { loadEntry(await api("/api/traces/" + encodeURIComponent(el.dataset.id)), {autoplay: false, step: "last", fillForm: true}); } catch (e) { toast(e.message); } });
 }
 
 /* ===== M. view switching + keyboard + startup ===== */
@@ -866,7 +866,7 @@ async function startup(){
     const p = S.boot.presets.find(x => x.id === h.get("preset"));
     if (p) { fillForm(p.flow); try { const e = await api("/api/trace", {...p.flow, preset: p.id}); loadEntry(e, {step: h.get("step") || undefined, autoplay: !h.get("step")}); refreshHistory();
       if (h.get("node")) selectNode(h.get("node")); } catch (err) { toast(err.message); } }
-  } else if (h.get("trace")) { try { loadEntry(await api("/api/traces/" + h.get("trace")), {autoplay: false, step: "last", fillForm: true}); } catch (e) { toast("That trace is no longer available (the server was restarted). Run a new one."); } }
+  } else if (h.get("trace")) { try { loadEntry(await api("/api/traces/" + encodeURIComponent(h.get("trace"))), {autoplay: false, step: "last", fillForm: true}); } catch (e) { toast("That trace is no longer available (the server was restarted). Run a new one."); } }
   else if (S.boot.presets.length) fillForm(S.boot.presets[0].flow);
 }
 requestAnimationFrame(flowTick);

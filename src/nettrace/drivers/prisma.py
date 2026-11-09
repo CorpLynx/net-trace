@@ -58,6 +58,7 @@ class ScmClient:
         if missing:
             raise CredentialError(f"Strata Cloud Manager credentials missing: {', '.join(missing)}")
         # OAuth2 client-credentials token request. This is authentication, not a config change.
+        audit.log("scm", "strata-cloud-manager", f"POST {self.token_url} (OAuth2 token request)", "ok")
         try:
             resp = requests.post(self.token_url, data={"grant_type": "client_credentials", "scope": f"tsg_id:{tsg}"},
                                  auth=(client_id, secret), timeout=self.timeout, allow_redirects=False)
@@ -286,6 +287,8 @@ def evaluate_rules(rules: list[dict[str, Any]], resolver: Resolver, flow: Flow, 
             checks["user"] = True if exact else None
         if _list(rule, "category") != ["any"]:
             checks["url-category"] = None
+        if rule.get("schedule"):  # a time-limited rule is not always in force; the clock is not evaluated
+            checks["schedule"] = None
         for hip in ("source_hip", "destination_hip"):
             if _list(rule, hip) != ["any"]:
                 checks[hip] = None
@@ -372,7 +375,13 @@ def step(scm: ScmClient, inv: Inventory, at: PrismaAt, flow: Flow) -> StepResult
         if action != "allow":
             return StepResult([hop(Status.BLOCK, f"{zones}: rule {result.rule} -> {action}", policy=policy)], flow,
                               outcome=Outcome.BLOCKED, reason=f"Prisma Access rule {result.rule} action {action}")
-        status = Status.WARN if result.uncertain else Status.PASS
+        if result.uncertain:
+            # An earlier rule nettrace could not evaluate might be a deny that catches the flow first.
+            return StepResult([hop(Status.UNKNOWN, f"{zones}: rule {result.rule} -> allow, but earlier rules "
+                                   "could not be evaluated", policy=policy)], flow, outcome=Outcome.INCOMPLETE,
+                              reason=f"Prisma Access: {result.rule} (allow) is only reached if the rules above it "
+                                     "do not match, and nettrace can't tell")
+        status = Status.PASS
 
     h = hop(status, f"{zones}; {route}", policy=policy)
     if dst_loc:

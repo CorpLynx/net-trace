@@ -170,6 +170,8 @@ SCM = {
         "services": [{"name": "svc-https", "protocol": {"tcp": {"port": "443"}}},
                      {"name": "svc-dns", "protocol": {"udp": {"port": "53"}}}],
         "service-groups": [],
+        "application-groups": [],
+        "application-filters": [],
     },
 }
 
@@ -523,6 +525,7 @@ def install() -> Any:
     """Plug the simulators in and return the demo Inventory. Idempotent."""
     if "inventory" in _installed:
         return _installed["inventory"]
+    from nettrace import audit
     from nettrace.demo import sim_aws, sim_cisco, sim_panos, sim_scm
     from nettrace.drivers.aws import AwsEnv
     from nettrace.drivers.cisco_iosxe import CiscoClient
@@ -538,6 +541,7 @@ def install() -> Any:
     tmp = tempfile.mkdtemp(prefix="nettrace-demo-")
     os.environ["NETTRACE_CACHE_DIR"] = tmp  # keep the demo's discovery cache away from the real one
 
+    audit.mark_demo()
     CiscoClient.connection_override = sim_cisco.connect
     XmlApi.session_override = sim_panos.session
     ScmClient.transport_override = sim_scm.get

@@ -285,8 +285,14 @@ def panos_cli_to_xml(command: str) -> str:
 
 
 def scrubbed_env() -> dict[str, str]:
-    """The environment without credentials (NETTRACE_* and AWS_*) for processes nettrace launches."""
-    return {k: v for k, v in os.environ.items() if not k.startswith(("NETTRACE_", "AWS_"))}
+    """The environment without credentials for processes nettrace launches: NETTRACE_*, AWS_*, anything named
+    *_TOKEN, *_SECRET, *_PASSWORD, *_API_KEY, *_KEY, or containing CRED (inventory *_env names are arbitrary)."""
+    def secret(name: str) -> bool:
+        up = name.upper()
+        return up.startswith(("NETTRACE_", "AWS_")) or "CRED" in up or up.endswith(
+            ("_TOKEN", "_SECRET", "_PASSWORD", "_API_KEY", "_KEY"))
+
+    return {k: v for k, v in os.environ.items() if not secret(k)}
 
 
 def launch_browser(url: str) -> None:
@@ -342,6 +348,8 @@ def make_handler(app: App, port: int, verbose: bool) -> type[BaseHTTPRequestHand
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
+            if "Content-Security-Policy" not in (extra or {}):  # JSON and error bodies: nothing may load or run
+                self.send_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
             self.end_headers()

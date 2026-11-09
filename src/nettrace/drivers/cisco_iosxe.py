@@ -111,8 +111,12 @@ class CiscoClient:
                 params["secret"] = secret
             try:
                 self._conn = ConnectHandler(**params)
+                # Netmiko sends these itself during login, outside check_cisco_command; session settings only.
+                for prep in ("terminal length 0", "terminal width 511"):
+                    audit.log("ssh", self.device.name, prep, "ok")
                 if secret:
                     self._conn.enable()  # privilege level only; never enters config mode
+                    audit.log("ssh", self.device.name, "enable", "ok")
             except (NetmikoAuthenticationException, NetmikoTimeoutException) as exc:
                 if isinstance(exc, NetmikoAuthenticationException):
                     CiscoClient._auth_failed[self.device.name] = time.monotonic()
@@ -232,6 +236,7 @@ def step(client: CiscoClient, at: DeviceAt, flow: Flow) -> StepResult:
 
     # 1. ingress interface
     ingress = at.arrival_interface
+    inferred = False
     if not ingress and at.arrival_ip:
         ingress = client.interface_for_ip(at.arrival_ip)
     if not ingress:
@@ -239,7 +244,10 @@ def step(client: CiscoClient, at: DeviceAt, flow: Flow) -> StepResult:
         first = next((e for e in src_cef.entries if e.interface), None)
         ingress = first.interface if first else None
         if ingress:
+            inferred = True
             details.append(f"ingress {ingress} inferred from route back to {flow.src}")
+            warnings.append(f"{dev.name}: ingress {ingress} inferred from the route back to {flow.src}; "
+                            "with asymmetric routing or ECMP the real ingress (and its ACL) may differ")
 
     if not ingress:
         # Without the ingress interface the inbound ACL can't be read: don't skip it silently.
@@ -309,7 +317,7 @@ def step(client: CiscoClient, at: DeviceAt, flow: Flow) -> StepResult:
                               reason=f"{dev.name}: ACL {out_acl} outbound on {egress} denies the flow")
 
     policy = "; ".join(f"{r.name} {d}: {r.line}" for d, r in acl_results) or "no interface ACLs"
-    status = Status.WARN if pbr or len(ecmp) > 1 else Status.PASS
+    status = Status.WARN if pbr or len(ecmp) > 1 or inferred else Status.PASS
     for d, r in acl_results:
         if not r.exists:
             details.append(f"ACL {r.name} ({d}) is referenced but not defined; IOS permits all")

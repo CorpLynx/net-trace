@@ -79,7 +79,7 @@ code that would change if the assumption is wrong.
   there is no persistent cache.
 
 ### General
-- **G17.** A pytest suite exists (`tests/`, 233 tests: demo presets, read-only guards, hardening,
+- **G17.** A pytest suite exists (`tests/`, 422 tests: demo presets, read-only guards, hardening,
   audit/console scope, never-guess and robustness cases, ACL and netutil units, packet-flow and
   artifact checks), but there is no CI, and nothing verifies against real devices. The suite
   uses the demo simulators, so it proves self-consistency, not device behaviour. Still missing:

@@ -32,3 +32,17 @@ trace*.json
 *.trace.json
 nettrace-*.html
 nettrace-*.svg
+
+# README example outputs and common ad-hoc trace/map output names
+t.json
+t.html
+t.svg
+trace.html
+trace-*.json
+*.map.html
+*.map.svg
+out/
+a.json
+a.svg
+ticket-*.html
+ticket-*.svg

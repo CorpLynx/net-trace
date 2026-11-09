@@ -417,7 +417,7 @@ nettrace topology clear                       # deletes only the topology cache 
 
 ## 5. Test strategy (existing seams, no demo branches)
 
-Principle: add simulator capability below the four seams; add no `if demo` anywhere. Existing 233 tests must
+Principle: add simulator capability below the four seams; add no `if demo` anywhere. Existing 422 tests must
 pass unchanged because declared links remain the default path.
 
 1. **Pure unit tests** (fast, no seams): join rules fed with parsed observation dataclasses; merge

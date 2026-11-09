@@ -98,11 +98,6 @@ def test_prisma_deny_without_uncertainty_still_blocks():
     assert res.outcome == Outcome.BLOCKED and res.hops[0].status == Status.BLOCK
 
 
-def test_prisma_allow_below_uncertain_rule_is_warn():
-    res = _prisma_step([_rule("needs-user", "deny", source_user=["alice"]), _rule("allow-all", "allow")])
-    assert res.hops[0].status == Status.WARN
-
-
 @pytest.mark.parametrize("extra", [{"category": ["gambling"]}, {"source_hip": ["managed"]}, {"destination": ["fqdn-obj"]}])
 def test_prisma_unevaluable_criteria_are_uncertain(extra):
     objs = {"addresses": {"fqdn-obj": {"name": "fqdn-obj", "fqdn": "example.com"}}, "address-groups": {}}

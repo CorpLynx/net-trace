@@ -77,7 +77,7 @@ def test_trace_and_console_are_audited(app, tmp_path):
     recs = _records(tmp_path)
     assert {"ssh", "panos"} <= {r["kind"] for r in recs}
     for r in recs:
-        assert set(r) == {"ts", "pid", "user", "mode", "device", "kind", "request", "status"}
+        assert set(r) - {"demo"} == {"ts", "pid", "user", "mode", "device", "kind", "request", "status"}
         assert r["pid"] == os.getpid() and r["status"] in ("ok", "refused", "error")
     assert any(r["mode"] == "trace" and r["status"] == "ok" for r in recs)
     assert any(r["mode"] == "console" and r["status"] == "refused" and "running-config" in r["request"] for r in recs)

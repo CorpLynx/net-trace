@@ -44,8 +44,9 @@ and `--query` (JMESPath) accepted anywhere on the line.
      (`allow_redirects=False`; a 3xx is a `DeviceError`), so API keys and tokens go to the configured host only.
    - The web console accepts an exact command list only (no raw XML; Cisco = the allowlist above, nothing else).
    - Every request sent or refused is appended to the audit log (`src/nettrace/audit.py`,
-     `~/.local/state/nettrace/audit.log`, override `NETTRACE_AUDIT_LOG`; tests must set it). Requests only,
-     never responses or credentials. New request paths must call `audit.log` / `audit.refused`.
+     `~/.local/state/nettrace/audit.log`, override `NETTRACE_AUDIT_LOG`; tests must set it; a symlinked log or
+     directory is never followed, the file is 0600; demo-lab runs add `"demo": true`). Requests only,
+     never responses or credentials. This includes the SCM token POST and Netmiko's login prep (`terminal length/width`, `enable`). New request paths must call `audit.log` / `audit.refused`.
    - AWS: a botocore `before-call` hook allows only an exact allowlist of (service, operation) pairs
      (the EC2 reads in `iam/nettrace-readonly-policy.json`) and `sts:AssumeRole` (900 s, that policy as the
      inline session `Policy`, which fails closed: packaged in `nettrace/data/`, AssumeRole is refused if it cannot be
@@ -60,7 +61,7 @@ and `--query` (JMESPath) accepted anywhere on the line.
 3. **Never guess.** If a rule or ACL entry depends on something nettrace can't evaluate (App-ID, user
    groups, object-groups, FQDN objects, URL categories), report it as uncertain (`UNKNOWN`/`WARN`, or an
    `uncertain` list). Never assume it matched or didn't match. A query the device failed to answer
-   (`panos.Unavailable`) is not "not configured". A deny below an uncertain Prisma rule is UNKNOWN. Cisco ECMP
+   (`panos.Unavailable`) is not "not configured". A deny or an allow below an uncertain Prisma rule is UNKNOWN (a rule with a `schedule` is uncertain). A Cisco ingress inferred from the route back is WARN. Cisco ECMP
    and policy routing are WARN (alternatives listed), never a silent pick. Several ENIs with one IP raise
    `AmbiguousEni`. A trace has an overall deadline (`errors.Deadline`, default 120 s, `trace_timeout` /
    `--timeout`); every new request path must call `deadline.check()` before it sends (it also raises `Cancelled`
@@ -85,25 +86,25 @@ and `--query` (JMESPath) accepted anywhere on the line.
    `--host` option, CORS, or unauthenticated API routes. Console commands must keep going through
    `CiscoClient.show` / `PanosClient.request`, so the guards apply. The tokenised URL is only printed;
    `serve --open` (off by default; `--no-open` is a hidden no-op) launches the bare URL (the page asks for the token) via `launch_browser`, which drops
-   `NETTRACE_*`/`AWS_*` from the browser's environment. Never pass the token in argv or env. Console limits:
+   `NETTRACE_*`/`AWS_*` and credential-like names (`*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_KEY`, `*CRED*`) from the browser's environment. Never pass the token in argv or env. Console limits:
    one session per device, 1 s between commands, 60 s idle disconnect, 256 KiB output; Cisco SSH refuses
    logins for 5 min after an auth failure.
 8. **TLS and SSH stay verified.** `verify_tls: false` under `defaults:` or `panorama:` needs env
    `NETTRACE_ALLOW_INSECURE_TLS=1` (per-device false is allowed with a warning); a string `verify_tls` must be an
    existing CA bundle. A missing/changed SSH host key is a `DeviceError` telling the user to verify with `ssh`;
-   never suggest `ssh_strict: false`. AWS clients use `boto_config()` (5 s connect, 20 s read, standard x3);
+   never suggest `ssh_strict: false` (in `defaults:` it needs `NETTRACE_ALLOW_INSECURE_SSH=1`; per device it warns by name). AWS clients use `boto_config()` (5 s connect, 20 s read, standard x3);
    PAN-OS/SCM reads retry once on a timeout only.
 9. **Artifacts are private.** Maps go through `cli.write_private` (0600) and drop hop evidence unless
    `--with-evidence` (then the HTML shows a "do not share" banner). Evidence is capped (Cisco/PAN-OS 4000
    chars, AWS 1500, any `Evidence` 256 KiB).
 10. **Device output is untrusted in the path map too.** Everything from a trace goes through
    `html.escape` in `viz/svg.py` and `esc()` in the viewer JS. The embedded trace JSON is
-   `<`/`>`/`&`/U+2028-escaped (`_json_for_script`). The page's CSP is `default-src 'none'`. Keep the
+   `<`/`>`/`&`/U+2028-escaped (`_json_for_script`). The page's CSP is `default-src 'none'`; JSON and error responses carry it too. Keep the
    viewer free of external URLs so it works offline and can't leak trace data.
 
 ## Status (as of 2026-11-08)
 
-- v0.4.0. It works end to end in simulation: `moto` for AWS, canned Cisco, PAN-OS, Panorama and SCM
+- v0.4.0. It works end to end in simulation: a custom EC2 simulator for AWS (`demo/sim_aws.py`), canned Cisco, PAN-OS, Panorama and SCM
   answers. The demo lab's 12 presets all give their expected outcome (`tests/test_demo_presets.py`).
 - Path maps: `trace run --map x.html|x.svg` / `--open` and `nettrace viz render` draw a NetBrain-style
   map from the trace JSON (`src/nettrace/viz/`). The HTML is a single offline file.
@@ -118,7 +119,7 @@ and `--query` (JMESPath) accepted anywhere on the line.
 - It is not yet known whether Prisma Access is managed by **Panorama** (device groups such as
   `Mobile_User_Device_Group`) or by **Strata Cloud Manager**. The code assumes SCM. This is roadmap
   item R2.
-- Test suite: `.venv/bin/pytest -q` (~407 tests: guards, hardening, audit/console scope, never-guess and robustness cases,
+- Test suite: `.venv/bin/pytest -q` (~422 tests: guards, hardening, audit/console scope, never-guess and robustness cases,
   ACL and netutil units, and all 12 demo presets). It uses the demo lab's simulators as the harness.
 
 ## Code map
@@ -174,14 +175,14 @@ python3 -m venv .venv && .venv/bin/pip install -e .
 .venv/bin/ruff check src --select F,E9,B --ignore B008           # lint used during build
 ```
 
-- Python 3.10+ (developed on 3.15). Runtime dependencies are in `pyproject.toml`. `moto` and `ruff` were
+- Python 3.10+ (developed on 3.15). Runtime dependencies are in `pyproject.toml`. `moto` (only a mocking option, no test imports it) and `ruff` were
   installed into `.venv` for development only.
 - Quickest regression check: every preset in `nettrace.demo.lab.PRESETS` has an `expect` outcome.
   Run them all with `nettrace --demo trace run ... -o json` and compare. When changing a driver, also
   change the matching simulator if the device's real output format is what changed.
 - To verify behaviour without real devices, you can also mock at the client boundary: `CiscoClient.show`,
   `requests.Session.post` for PAN-OS and Panorama (switch on URL and the `target` form field),
-  `ScmClient.get_all`, and `moto.mock_aws()` for AWS. Known moto
+  `ScmClient.get_all`, and `moto.mock_aws()` (if installed) for AWS. Known moto
   gaps: it has no cross-account TGW, `SearchTransitGatewayRoutes` returns empty
   `TransitGatewayAttachments`, and the ENI filter `association.public-ip` is not implemented.
 - Keep changes scoped: there is no CI, and the owner reviews diffs.

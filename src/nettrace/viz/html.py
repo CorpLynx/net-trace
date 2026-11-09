@@ -150,8 +150,8 @@ function fit(){
 }
 function select(hop){
   document.querySelectorAll(".sel").forEach(e => e.classList.remove("sel"));
-  document.querySelectorAll(`[data-hop="${hop}"]`).forEach(e => e.classList.add("sel"));
-  const tr = document.querySelector(`#hops tr[data-hop="${hop}"]`); if(tr) tr.scrollIntoView({block:"nearest"});
+  document.querySelectorAll(`[data-hop="${CSS.escape(String(hop))}"]`).forEach(e => e.classList.add("sel"));
+  const tr = document.querySelector(`#hops tr[data-hop="${CSS.escape(String(hop))}"]`); if(tr) tr.scrollIntoView({block:"nearest"});
   const h = DATA[cur].trace.Hops.find(x => x.index == hop); if(!h) return;
   const loc = Object.entries(h.location || {}).map(([k,v]) => `${k}=${v}`).join(", ");
   const rows = [["status", badge(h.status)], ["domain", `${esc(h.domain)} ${esc(h.component)}`],

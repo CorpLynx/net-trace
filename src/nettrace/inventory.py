@@ -339,6 +339,20 @@ def _verify_tls(value: Any, where: str, *, fleet: bool = False) -> bool | str:
                          f"(got {value!r})")
 
 
+def _ssh_strict(value: Any, where: str, name: str, *, fleet: bool) -> bool:
+    """SSH host-key checking. `false` from `defaults:` needs NETTRACE_ALLOW_INSECURE_SSH=1 (mirrors verify_tls);
+    on a single device it is allowed with a loud warning that names the device."""
+    if value is not False:
+        return True
+    if fleet and os.environ.get("NETTRACE_ALLOW_INSECURE_SSH") != "1":
+        raise InventoryError(f"{where}: ssh_strict: false here would disable SSH host-key checks for every device "
+                             "that inherits it. Set it on the one device that needs it, or export "
+                             "NETTRACE_ALLOW_INSECURE_SSH=1 to allow it.")
+    warnings.warn(f"device {name}: ssh_strict: false, SSH host keys are NOT verified; a man-in-the-middle could "
+                  "capture the login. Fix known_hosts instead", stacklevel=2)
+    return False
+
+
 def _check_external_id(a: dict[str, Any], base_account: Any, where: str) -> None:
     """A role in another account than the base identity needs an external id (confused deputy).
     The base account is only known when aws.base_account_id is set (no STS GetCallerIdentity is allowed);
@@ -438,7 +452,8 @@ def load_inventory(path: Path | str | None = None) -> Inventory:
             vsys=merged.get("vsys"),
             verify_tls=_verify_tls(merged.get("verify_tls", True), f"{where}.verify_tls",
                                    fleet="verify_tls" not in d),
-            ssh_strict=merged.get("ssh_strict", True) is not False,
+            ssh_strict=_ssh_strict(merged.get("ssh_strict", True), f"{where}.ssh_strict", str(merged["name"]),
+                                   fleet="ssh_strict" not in d),
             username_env=merged.get("username_env"),
             password_env=merged.get("password_env"),
             secret_env=merged.get("secret_env"),
