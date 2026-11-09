@@ -79,11 +79,16 @@ code that would change if the assumption is wrong.
   there is no persistent cache.
 
 ### General
-- **G17.** A pytest suite exists (`tests/`, 422 tests: demo presets, read-only guards, hardening,
+- **G17.** A pytest suite exists (`tests/`, 446 tests: demo presets, read-only guards, hardening,
   audit/console scope, never-guess and robustness cases, ACL and netutil units, packet-flow and
   artifact checks), but there is no CI, and nothing verifies against real devices. The suite
   uses the demo simulators, so it proves self-consistency, not device behaviour. Still missing:
   committed fixtures of real device output (R3) and a fake-Panorama failover suite.
+- **G17a.** Discovery cache (R18): validated on load, merged atomically under a file lock, duplicate IPs marked
+  ambiguous (UNKNOWN hop for a next hop; a *source* IP that is ambiguous is still not reported by name, it falls
+  through to the AWS lookup). The lock is POSIX `flock` (no-op elsewhere), advisory and same-uid. Web console: a busy
+  device returns 429 instead of queueing; a stalled body returns 408 after 10 s; closing the server does not wait
+  for a stalled device.
 - **G18.** One path per trace. Nothing traverses the ECMP fan-out, so no all-paths view.
 - **G19.** A trace has an overall deadline (`trace_timeout` / `--timeout`, default 120 s), AWS clients
   use short timeouts with standard retries, and PAN-OS/SCM reads retry once on a timeout. Cisco SSH

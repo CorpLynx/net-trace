@@ -34,8 +34,9 @@ nettrace trace run --source 10.1.1.10 --destination 10.20.1.50 --port 443
 nettrace demo serve            # serves http://127.0.0.1:8765 against the simulated Acme Corp lab
 ```
 
-It prints a URL with a one-time token in the fragment (`#token=...`). Open that URL, or add `--open` to launch
-the browser at the bare address and paste the printed token when the page asks.
+It opens your browser at a one-time login URL (`http://127.0.0.1:8765/?c=...`); nothing to paste. The link works
+once and expires after 60 s. Add `--no-open` to only print it (open it within 60 s). If it expired or was used, run
+the command again. (`--open` is still accepted and does nothing.)
 
 A blocked trace: the verdict bar says where it stopped and why, the topology marks the blocking device, and the
 hop list and inspector show the evidence behind each verdict.
@@ -80,8 +81,8 @@ so any source and destination you type gets a real answer, not just the presets.
 - **Scenarios and history.** 12 preset scenarios with an expected outcome each (see
   `nettrace demo scenarios`), plus a history of recent traces.
 - **Deep links.** `#preset=branch-smb&step=last&node=core-rtr1` opens a scenario at a given step
-  with a node selected; `#trace=<id>` reopens a trace from history. Put the token first:
-  `#token=...&preset=branch-smb&step=last`. The token is removed from the address bar once the page loads.
+  with a node selected; `#trace=<id>` reopens a trace from history. These work after
+  you are logged in; an old `#token=` in a link is ignored.
 
 The Device tab has a read-only console for the simulated device. It lists the allowed commands, refuses the rest,
 and logs refusals:
@@ -104,11 +105,11 @@ and console commands query the real devices read-only.
 
 How the server is locked down:
 - it binds to 127.0.0.1 only;
-- every API call needs the per-run token printed at start-up. Open the printed URL yourself (the token
-  is in its `#fragment`, which the browser never sends). `--open` launches the browser on the bare
-  `http://127.0.0.1:PORT/`, so the token never appears on a command line, and the page asks you to
-  paste it. The browser is started without `NETTRACE_*` and `AWS_*` variables (`open` on macOS,
-  `xdg-open` on Linux);
+- every API call needs the per-run session. The printed URL carries a separate one-time login code (single use,
+  60 s). It is visible in the browser launcher's argument list, which is why it is single-use and short-lived. The
+  server swaps it for an `HttpOnly; SameSite=Strict` session cookie and redirects to a clean URL. API calls
+  must also send an `X-Nettrace-Client: 1` header, and the Host/Origin checks still apply. The browser is started
+  without `NETTRACE_*` and `AWS_*` variables (`open` on macOS, `xdg-open` on Linux);
 - the console allows one session per device, at most one command per second, closes the session after
   60 s idle, and caps output at 256 KiB;
 - after an SSH authentication failure nettrace refuses new logins to that device for 5 minutes, so a

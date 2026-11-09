@@ -54,7 +54,7 @@ def test_launch_browser_scrubs_env_and_never_gets_token(monkeypatch):
     assert not any(k.startswith(("NETTRACE_", "AWS_")) for k in seen["env"]) and "PATH" in seen["env"]
 
 
-def test_serve_opens_bare_url_only_with_open(monkeypatch):
+def test_serve_opens_one_time_url_unless_no_open(monkeypatch):
     opened, urls = [], []
 
     class FakeHttpd:
@@ -79,8 +79,8 @@ def test_serve_opens_bare_url_only_with_open(monkeypatch):
     monkeypatch.setattr(server, "ThreadingHTTPServer", FakeHttpd)
     monkeypatch.setattr(server.threading, "Timer", Timer)
     monkeypatch.setattr(server, "launch_browser", opened.append)
-    server.serve(install(), demo=True, port=1, on_ready=lambda url, app: urls.append(url))
-    assert opened == [] and "#token=" in urls[0]
-    server.serve(install(), demo=True, port=1, open_browser=True)
-    assert opened == ["http://127.0.0.1:1/"]
+    server.serve(install(), demo=True, port=1, open_browser=False, on_ready=lambda url, app: urls.append(url))
+    assert opened == [] and urls[0].startswith("http://127.0.0.1:1/?c=") and "#" not in urls[0]
+    server.serve(install(), demo=True, port=1, on_ready=lambda url, app: urls.append(url))  # default: open
+    assert opened == [urls[1]] and urls[0] != urls[1]  # a fresh code per run; the session secret is never in the URL
 

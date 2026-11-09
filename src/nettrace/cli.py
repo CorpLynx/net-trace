@@ -373,7 +373,7 @@ def inventory_discover(ctx: Ctx, devices: tuple[str, ...]) -> None:
     inv = ctx.inv
     targets = [inv.device(d) for d in devices] if devices else list(inv.devices.values())
     clients = Clients(inv)
-    mapping = dict(inv.discovered)
+    found_by_device: dict[str, dict[str, str]] = {}
     rows = []
 
     def one(dev: Any) -> tuple[Any, dict[str, str] | None, str | None]:
@@ -392,13 +392,13 @@ def inventory_discover(ctx: Ctx, devices: tuple[str, ...]) -> None:
         if err:
             rows.append({"Device": dev.name, "Addresses": 0, "Status": f"error: {err}"})
             continue
-        mapping = {ip: v for ip, v in mapping.items() if v.get("device") != dev.name}
-        for ip, intf in (found or {}).items():
-            mapping[ip] = {"device": dev.name, "interface": intf}
+        found_by_device[dev.name] = dict(found or {})
         rows.append({"Device": dev.name, "Addresses": len(found or {}), "Status": "ok"})
-    path = inv.save_discovered(mapping)
+    path = inv.merge_discovered(found_by_device)
     ctx.emit(rows)
-    ctx.err.print(f"saved {len(mapping)} addresses to {path}")
+    ctx.err.print(f"saved {len(inv.discovered)} addresses to {path}")
+    for ip in sorted(inv.ambiguous):
+        ctx.err.print(f"warning: {ip} is claimed by {', '.join(inv.ambiguous_owners(ip))}; kept for neither")
 
 
 # ===== cisco ====================================================================================
@@ -734,8 +734,11 @@ def _serve(ctx: Ctx, port: int, open_browser: bool, verbose: bool) -> None:
         mode = "DEMO LAB (simulated devices)" if ctx.demo else f"LIVE inventory {inv.path} (read-only queries)"
         ctx.err.print(f"[bold]nettrace web UI[/] · {mode}")
         ctx.err.print(f"  open  [cyan]{url}[/]")
-        ctx.err.print(f"  token [cyan]{app.token}[/]  (paste it if the page asks; --open launches the URL without it)")
-        ctx.err.print("  bound to 127.0.0.1 only; the token is required for every API call. Ctrl-C to stop.")
+        if open_browser:
+            ctx.err.print("  (opening your browser; this link works once and expires in 60 s)")
+        else:
+            ctx.err.print("  open it within 60 s; the link works once. If it expires, restart this command.")
+        ctx.err.print("  bound to 127.0.0.1 only; every API call needs the session this link starts. Ctrl-C to stop.")
 
     try:
         serve(inv, demo=ctx.demo, port=port, open_browser=open_browser, verbose=verbose, on_ready=ready)
@@ -745,16 +748,16 @@ def _serve(ctx: Ctx, port: int, open_browser: bool, verbose: bool) -> None:
 
 @cli.command("serve")
 @click.option("--port", type=click.IntRange(1024, 65535), default=8765, show_default=True)
-@click.option("--open", "open_browser", is_flag=True, help="Open the bare URL in a browser; paste the token there.")
-@click.option("--no-open", is_flag=True, hidden=True, help="Default now; kept for old scripts.")
+@click.option("--open/--no-open", "open_browser", default=True, show_default=True,
+              help="Open the one-time login URL in your browser (--no-open only prints it).")
 @click.option("--verbose", "-v", is_flag=True, help="Log HTTP requests.")
 @pass_ctx
-def serve_cmd(ctx: Ctx, port: int, open_browser: bool, no_open: bool, verbose: bool) -> None:
+def serve_cmd(ctx: Ctx, port: int, open_browser: bool, verbose: bool) -> None:
     """Local web UI: topology, multi-packet flow animation, path maps, read-only device console.
 
     With --demo (or `nettrace demo serve`) it runs against the simulated Acme Corp lab.
     """
-    _serve(ctx, port, open_browser and not no_open, verbose)
+    _serve(ctx, port, open_browser, verbose)
 
 
 @cli.group()
@@ -771,14 +774,14 @@ def demo() -> None:
 
 @demo.command("serve")
 @click.option("--port", type=click.IntRange(1024, 65535), default=8765, show_default=True)
-@click.option("--open", "open_browser", is_flag=True, help="Open the bare URL in a browser; paste the token there.")
-@click.option("--no-open", is_flag=True, hidden=True, help="Default now; kept for old scripts.")
+@click.option("--open/--no-open", "open_browser", default=True, show_default=True,
+              help="Open the one-time login URL in your browser (--no-open only prints it).")
 @click.option("--verbose", "-v", is_flag=True, help="Log HTTP requests.")
 @pass_ctx
-def demo_serve(ctx: Ctx, port: int, open_browser: bool, no_open: bool, verbose: bool) -> None:
+def demo_serve(ctx: Ctx, port: int, open_browser: bool, verbose: bool) -> None:
     """Web UI against the demo lab."""
     ctx.demo = True
-    _serve(ctx, port, open_browser and not no_open, verbose)
+    _serve(ctx, port, open_browser, verbose)
 
 
 @demo.command("scenarios")

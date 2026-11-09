@@ -2,7 +2,13 @@
 
 Security model (it can drive read-only queries against real devices):
 - binds to 127.0.0.1 only;
-- every /api call needs the per-run token printed at start-up (X-Nettrace-Token header only, never the query string; the printed URL carries it in the #fragment, which browsers never send; with --open the browser gets the bare URL, never the token, and the page asks for it);
+- every /api call needs the per-run session secret: the X-Nettrace-Token header (scripts, tests) or the `nettrace_session`
+  cookie plus the custom header `X-Nettrace-Client: 1` (a cross-site page can't send that without a CORS preflight, which
+  this server never allows). Never the query string;
+- the cookie is issued by GET /?c=<code>: a separate one-time login code (60 s, single use, memory only) that the start-up
+  URL carries. The code does appear in argv (`open <url>`, visible to `ps`), which is why it is single-use and expires
+  fast; the long-lived secret never goes on a command line, in a URL or in a log. The cookie is HttpOnly, SameSite=Strict,
+  Path=/ and has no Domain/Max-Age (a session cookie); no Secure flag because loopback is plain http;
 - Host header must be 127.0.0.1:<port> or localhost:<port> (blocks DNS rebinding);
 - POST bodies must be JSON and at most 64 KiB; Origin, when sent, must be this server;
 - POST /api/trace/cancel {id} is authenticated like every other route; it only sets a cooperative cancel flag
@@ -27,9 +33,11 @@ import xml.dom.minidom
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from nettrace import __version__, audit
 from nettrace.errors import CancelToken, NetTraceError, ReadOnlyViolation
@@ -39,9 +47,12 @@ from nettrace.netutil import PROTOCOL_NUMBERS
 from nettrace.web.topology import auto_topology, overlay
 
 MAX_BODY = 64 * 1024
+BODY_DEADLINE = 10.0  # seconds to receive a whole POST body (the socket timeout is per read; this is the total)
 CONSOLE_IDLE = 60.0  # seconds without a command before a device's console session is closed
 CONSOLE_GAP = 1.0  # minimum seconds between console commands to the same device
 RUN_ID_RE = re.compile(r"[A-Za-z0-9_-]{8,64}")  # client-chosen id of a running trace (for /api/trace/cancel)
+LOGIN_TTL = 60.0  # seconds the one-time login code stays valid
+COOKIE_NAME = "nettrace_session"
 CANCEL_RATE = (30, 10.0)  # at most 30 cancel calls per 10 s
 TOKEN_RE = re.compile(r"[A-Za-z0-9._@\\\-]{1,64}")
 ICON_KINDS = ("router", "firewall", "prisma", "tgw", "vpc-router", "eni", "host", "endpoint", "igw", "external",
@@ -61,7 +72,7 @@ PANOS_CLI = {
     "show high-availability state": ["show", "high-availability", "state"],
 }
 class App:
-    def __init__(self, inv: Inventory, *, demo: bool):
+    def __init__(self, inv: Inventory, *, demo: bool, code_ttl: float = LOGIN_TTL, clock: Any = time.monotonic):
         self.inv = inv
         self.demo = demo
         if demo:
@@ -74,19 +85,44 @@ class App:
             self.topology = auto_topology(inv)
             self.presets = []
             self.title = str(inv.path)
-        self.token = secrets.token_urlsafe(24)
+        self.token = secrets.token_urlsafe(24)  # long-lived per-run session secret
+        self._clock = clock
+        self._code_lock = threading.Lock()
+        self._code: str | None = secrets.token_urlsafe(24)  # one-time login code; memory only, cleared on use
+        self._code_expiry = clock() + code_ttl
         self.history: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self.history_lock = threading.Lock()  # guards history (two trace threads write, the console/UI threads read)
         self.trace_slots = threading.BoundedSemaphore(2)
         self.runs_lock = threading.Lock()
         self.runs: dict[str, CancelToken] = {}  # running traces by run id
         self.cancelled_runs: OrderedDict[str, None] = OrderedDict()  # recently cancelled, so a repeat cancel is idempotent
         self._cancel_times: list[float] = []
+        # console_lock is short: it guards only the per-device session table and the rate-limit bookkeeping below.
+        # Device I/O runs under that device's own lock, never under console_lock.
         self.console_lock = threading.Lock()
+        self._device_locks: dict[str, threading.Lock] = {}
         self._console_last: dict[str, float] = {}
         self._console_idle: dict[str, threading.Timer] = {}
         from nettrace.engine import Clients
 
         self.console_clients = Clients(inv)
+
+    @property
+    def login_code(self) -> str | None:
+        return self._code
+
+    def redeem_code(self, code: str) -> bool:
+        """True once for the right, unexpired code; any outcome other than a wrong guess spends it."""
+        with self._code_lock:
+            if self._code is None:
+                return False
+            if self._clock() > self._code_expiry:
+                self._code = None
+                return False
+            if not hmac.compare_digest(code.encode("utf-8"), self._code.encode()):
+                return False
+            self._code = None
+            return True
 
     # ---- data ------------------------------------------------------------------------------
     def bootstrap(self) -> dict[str, Any]:
@@ -101,8 +137,14 @@ class App:
                 "history": self.history_list()}
 
     def history_list(self) -> list[dict[str, Any]]:
+        with self.history_lock:
+            items = list(self.history.items())
         return [{"id": k, "created": v["created"], "outcome": v["trace"]["Outcome"], "title": v["title"],
-                 "preset": v.get("preset")} for k, v in reversed(self.history.items())]
+                 "preset": v.get("preset")} for k, v in reversed(items)]
+
+    def history_get(self, tid: str) -> dict[str, Any] | None:
+        with self.history_lock:
+            return self.history.get(tid)
 
     # ---- trace -------------------------------------------------------------------------------
     def run_trace(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -132,18 +174,22 @@ class App:
             with self.runs_lock:
                 self.runs.pop(run_id, None)
         trace = result.to_dict()
-        tid = secrets.token_hex(4)
         port = f":{flow.dst_port}" if flow.dst_port else ""
         entry = {
-            "id": tid, "created": time.strftime("%H:%M:%S"), "elapsed_ms": int((time.time() - started) * 1000),
+            "id": "", "created": time.strftime("%H:%M:%S"), "elapsed_ms": int((time.time() - started) * 1000),
             "title": f"{flow.src} → {flow.dst}{port} {flow.protocol}", "preset": body.get("preset"),
             "run_id": run_id, "cancelled": result.cancelled,
             "trace": trace, "overlay": overlay(self.topology, trace),
             "map_svg": render_svg(build_map(trace), header=False),
         }
-        self.history[tid] = entry
-        while len(self.history) > 50:
-            self.history.popitem(last=False)
+        with self.history_lock:
+            tid = secrets.token_hex(4)
+            while tid in self.history:  # ids are unique
+                tid = secrets.token_hex(4)
+            entry["id"] = tid
+            self.history[tid] = entry
+            while len(self.history) > 50:
+                self.history.popitem(last=False)
         return entry
 
     def cancel_trace(self, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
@@ -211,57 +257,74 @@ class App:
         if not command or len(command) > 400:
             raise BadRequest("command: 1-400 characters")
         started = time.time()
-        with self.console_lock:
+        with self.console_lock:  # short: rate-limit bookkeeping and the per-device lock table only
             if time.monotonic() - self._console_last.get(name, -CONSOLE_GAP) < CONSOLE_GAP:
                 raise BadRequest(f"wait {CONSOLE_GAP:g} s between console commands on a device",
                                  HTTPStatus.TOO_MANY_REQUESTS)
             self._console_last[name] = time.monotonic()
+            dev_lock = self._device_locks.setdefault(name, threading.Lock())
         kind = "ssh" if dev.platform == "cisco_iosxe" else "panos"
-        with self.console_lock, audit.mode("console"):
-            try:
-                if dev.platform == "cisco_iosxe":
-                    if not re.fullmatch(r"[ -~]*", str(body.get("command", ""))):
-                        raise ReadOnlyViolation("console accepts printable ASCII, single-line commands only")
-                    client = self.console_clients.device(dev)
-                    client._cache.pop(command, None)  # console always re-runs
-                    output = client.show(command)
-                else:
-                    xml_cmd = panos_cli_to_xml(command)
-                    client = self.console_clients.device(dev)
-                    root = client.request({"type": "op", "cmd": xml_cmd}, xml_cmd)
-                    output = pretty_xml(root)
-                    client.api._cache.clear()
-                status = "ok"
-            except ReadOnlyViolation as exc:
-                audit.refused(exc, kind, name, command)
-                output, status = f"refused by nettrace read-only guard: {exc}", "refused"
-            except NetTraceError as exc:
-                output, status = str(exc), "error"
-            self._arm_idle(name)
+        if not dev_lock.acquire(blocking=False):  # one command at a time per device; others are never blocked
+            raise BadRequest(f"{name}: a console command is still running; try again when it finishes",
+                             HTTPStatus.TOO_MANY_REQUESTS)
+        try:
+            with audit.mode("console"):
+                try:
+                    with self.console_lock:  # session table only (no I/O in Clients.device)
+                        client = self.console_clients.device(dev)
+                    if dev.platform == "cisco_iosxe":
+                        if not re.fullmatch(r"[ -~]*", str(body.get("command", ""))):
+                            raise ReadOnlyViolation("console accepts printable ASCII, single-line commands only")
+                        client._cache.pop(command, None)  # console always re-runs
+                        output = client.show(command)
+                    else:
+                        xml_cmd = panos_cli_to_xml(command)
+                        root = client.request({"type": "op", "cmd": xml_cmd}, xml_cmd)
+                        output = pretty_xml(root)
+                        client.api._cache.clear()
+                    status = "ok"
+                except ReadOnlyViolation as exc:
+                    audit.refused(exc, kind, name, command)
+                    output, status = f"refused by nettrace read-only guard: {exc}", "refused"
+                except NetTraceError as exc:
+                    output, status = str(exc), "error"
+                self._arm_idle(name)
+        finally:
+            dev_lock.release()
         return {"device": name, "command": command, "status": status, "output": truncate(output),
                 "elapsed_ms": int((time.time() - started) * 1000)}
 
     def _arm_idle(self, name: str) -> None:
-        """Called with console_lock held: (re)start the idle timer for this device's console session."""
-        old = self._console_idle.pop(name, None)
-        if old:
-            old.cancel()
+        """(Re)start the idle timer for this device's console session."""
         t = threading.Timer(CONSOLE_IDLE, self._idle_close, args=(name,))
         t.daemon = True
-        self._console_idle[name] = t
+        with self.console_lock:
+            old = self._console_idle.pop(name, None)
+            if old:
+                old.cancel()
+            self._console_idle[name] = t
         t.start()
 
     def _idle_close(self, name: str) -> None:
         with self.console_lock:
+            dev_lock = self._device_locks.setdefault(name, threading.Lock())
             client = self.console_clients._devices.get(name)
+        if not dev_lock.acquire(blocking=False):  # a command is running; it re-arms the timer when it ends
+            return
+        try:
             if client is not None and hasattr(client, "close"):
                 client.close()
+        finally:
+            dev_lock.release()
+        with self.console_lock:
             self._console_idle.pop(name, None)
 
     def close(self) -> None:
-        for t in self._console_idle.values():
+        with self.console_lock:
+            timers = list(self._console_idle.values())
+        for t in timers:
             t.cancel()
-        self.console_clients.close()
+        self.console_clients.close()  # takes no lock: shutdown never waits on a stalled device
 
 
 def panos_cli_to_xml(command: str) -> str:
@@ -366,10 +429,45 @@ def make_handler(app: App, port: int, verbose: bool) -> type[BaseHTTPRequestHand
             if origin and origin not in {f"http://{h}" for h in allowed_hosts}:
                 self._send(HTTPStatus.FORBIDDEN, b"bad origin", "text/plain")
                 return False
-            if api and not hmac.compare_digest(self.headers.get("X-Nettrace-Token", "").encode("utf-8"), app.token.encode()):
-                self._json({"error": "missing or wrong token; open the URL printed by `nettrace serve`"}, 401)
-                return False
+            if api:
+                def same(a: str) -> bool:
+                    return hmac.compare_digest(a.encode("utf-8"), app.token.encode())
+
+                if same(self.headers.get("X-Nettrace-Token", "")):
+                    return True
+                jar = SimpleCookie()
+                try:
+                    jar.load(self.headers.get("Cookie", ""))
+                except Exception:  # malformed Cookie header: treat as no cookie
+                    jar = SimpleCookie()
+                morsel = jar.get(COOKIE_NAME)
+                if not (morsel and same(morsel.value)):
+                    self._json({"error": "session missing or ended; run `nettrace serve` again or open the URL it prints"}, 401)
+                    return False
+                if self.headers.get("X-Nettrace-Client") != "1":  # the CSRF header: needs a preflight cross-site
+                    self._json({"error": "missing X-Nettrace-Client header"}, 403)
+                    return False
             return True
+
+        def _read_body(self, length: int) -> bytes:
+            """Read exactly `length` bytes within BODY_DEADLINE seconds in total; a slow or short body is a 408."""
+            end = time.monotonic() + BODY_DEADLINE
+            chunks: list[bytes] = []
+            got = 0
+            while got < length:
+                left = end - time.monotonic()
+                if left <= 0:
+                    raise BadRequest("request body not received in time", HTTPStatus.REQUEST_TIMEOUT)
+                self.connection.settimeout(min(left, self.timeout))
+                try:
+                    part = self.rfile.read1(min(length - got, 8192))
+                except (TimeoutError, OSError):
+                    raise BadRequest("request body not received in time", HTTPStatus.REQUEST_TIMEOUT) from None
+                if not part:  # client closed before sending the whole body
+                    raise BadRequest("request body shorter than Content-Length", HTTPStatus.REQUEST_TIMEOUT)
+                chunks.append(part)
+                got += len(part)
+            return b"".join(chunks)
 
         def _body(self) -> dict[str, Any]:
             if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
@@ -381,7 +479,7 @@ def make_handler(app: App, port: int, verbose: bool) -> type[BaseHTTPRequestHand
             if length < 0 or length > MAX_BODY:
                 raise BadRequest("request too large", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             try:
-                data = json.loads(self.rfile.read(length) or b"{}")
+                data = json.loads(self._read_body(length) or b"{}")
             except ValueError:
                 raise BadRequest("invalid JSON") from None
             if not isinstance(data, dict):
@@ -390,9 +488,21 @@ def make_handler(app: App, port: int, verbose: bool) -> type[BaseHTTPRequestHand
 
         # ---- routes ----------------------------------------------------------------------------
         def do_GET(self) -> None:  # noqa: N802
-            path = self.path.split("?", 1)[0]
+            split = urlsplit(self.path)
+            path = split.path
             if path in ("/", "/index.html"):
                 if self._guard(api=False):
+                    codes = parse_qs(split.query).get("c")
+                    if codes is not None:  # one-time login: spend the code, set the session cookie, drop it from the URL
+                        if not app.redeem_code(codes[0]):
+                            self._send(401, b"This login link was already used or has expired.\n"
+                                       b"Run `nettrace serve` again (or `nettrace demo serve`) and open the new URL.\n",
+                                       "text/plain; charset=utf-8")
+                            return
+                        self._send(303, b"", "text/plain", {
+                            "Location": "/",
+                            "Set-Cookie": f"{COOKIE_NAME}={app.token}; HttpOnly; SameSite=Strict; Path=/"})
+                        return
                     self._send(200, page.encode(), "text/html; charset=utf-8",
                                {"Content-Security-Policy": PAGE_CSP, "X-Frame-Options": "DENY"})
                 return
@@ -406,7 +516,7 @@ def make_handler(app: App, port: int, verbose: bool) -> type[BaseHTTPRequestHand
             elif path == "/api/traces":
                 self._json(app.history_list())
             elif path.startswith("/api/traces/"):
-                entry = app.history.get(path.rsplit("/", 1)[1])
+                entry = app.history_get(path.rsplit("/", 1)[1])
                 self._json(entry if entry else {"error": "unknown trace"}, 200 if entry else 404)
             else:
                 self._json({"error": "not found"}, 404)
@@ -437,17 +547,17 @@ def make_handler(app: App, port: int, verbose: bool) -> type[BaseHTTPRequestHand
     return Handler
 
 
-def serve(inv: Inventory, *, demo: bool, port: int = 8765, open_browser: bool = False,
+def serve(inv: Inventory, *, demo: bool, port: int = 8765, open_browser: bool = True,
           verbose: bool = False, on_ready: Any = None) -> None:
     app = App(inv, demo=demo)
     httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(app, port, verbose))
     httpd.daemon_threads = True
-    url = f"http://127.0.0.1:{port}/#token={app.token}"
+    # The one-time code is in argv (visible to `ps`), but it is single-use and dies after 60 s; the session secret is not.
+    url = f"http://127.0.0.1:{port}/?c={app.login_code}"
     if on_ready:
         on_ready(url, app)
     if open_browser:
-        # The tokenised URL never goes on a command line (argv is visible to `ps`); the page asks for the token.
-        threading.Timer(0.4, launch_browser, args=(f"http://127.0.0.1:{port}/",)).start()
+        threading.Timer(0.4, launch_browser, args=(url,)).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

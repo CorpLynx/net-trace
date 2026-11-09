@@ -5,15 +5,15 @@ APP_HTML = resources.files("nettrace.web").joinpath("static/app.html").read_text
 
 
 def test_deep_link_params_survive_token_stripping():
-    # The token is removed from the address bar, but #preset=/#trace=/#step=/#node= must still be read at start-up.
+    # An old #token= is ignored and removed from the address bar, but #preset=/#trace=/#step=/#node= must still be read at start-up.
     assert "const HASH = new URLSearchParams(location.hash.slice(1))" in APP_HTML
     assert 'HASH.delete("token")' in APP_HTML
     start = APP_HTML.index("async function startup")
     body = APP_HTML[start:]
     assert "location.hash.slice" not in body          # start-up uses the saved HASH, not the already-cleared fragment
     assert 'h.get("preset")' in body and 'h.get("trace")' in body
-    # the token itself is never re-written into the URL
-    assert 'HASH.get("token")' in APP_HTML and "TOKEN}" not in APP_HTML.split("history.replaceState", 1)[1][:200]
+    # no token is read from, or written to, the URL any more: the session is an HttpOnly cookie
+    assert 'HASH.get("token")' not in APP_HTML and "TOKEN" not in APP_HTML.split("history.replaceState", 1)[1][:200]
 
 
 def test_hop_list_scroll_never_scrolls_the_page():

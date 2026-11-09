@@ -3,6 +3,24 @@
 Short records of choices made while building nettrace. Each one says why it was made, so a later
 change can be judged against the original reason. Newest first.
 
+## D14. Web UI login: one-time code, then an HttpOnly session cookie (2026-11-09)
+- **Why:** pasting a token (or opening a `#token=` URL by hand) made `serve` awkward, so `--open` was off by default.
+  Now `serve` opens the browser by default at `http://127.0.0.1:PORT/?c=<code>`; `--no-open` only prints it.
+- **Two secrets.** The long-lived session secret never leaves the server, the cookie and the `X-Nettrace-Token`
+  header (kept for tests and scripts). The login code is a separate random value: single use, 60 s, compared in
+  constant time, memory only. It does appear in argv (`ps`), which is why it is single-use and short-lived.
+  No route mints codes, so an expired code means restarting the command.
+- **Cookie:** `nettrace_session=...; HttpOnly; SameSite=Strict; Path=/`. No Domain or Max-Age (session cookie), no
+  Secure (plain http on loopback). The redirect response sends `Referrer-Policy: no-referrer` and `no-store`; the
+  query string is never logged.
+- **CSRF reasoning.** A cookie is sent automatically, so three independent layers keep another site from using it:
+  `SameSite=Strict` (not sent on cross-site requests), the existing Origin/Host checks, and the required custom
+  header `X-Nettrace-Client: 1`. A cross-site page cannot add a custom header without a CORS preflight, and the
+  server never answers preflights or sends CORS headers. POST bodies stay JSON-only. A cookie request without the
+  header is refused (403); a token in the query string is still refused.
+- **Rejected:** `localStorage`/`sessionStorage` (readable by page script), a token in the URL fragment (the old
+  paste flow), and an endpoint that issues fresh codes (it would be an unauthenticated route).
+
 ## D13. Never-guess gaps closed, bounded waits, SSH/TLS edges (2026-11-08)
 - **An unanswered question is not "no".** `PanosClient.config_get` returns `Unavailable(reason)` when the
   device errors or times out, and `None` only when the device answered "not configured". `_lookup`
@@ -54,7 +72,7 @@ style of Packet Tracer, CML or NetBrain.
 - **stdlib `http.server`, no web framework or front-end build.** This adds no dependencies and keeps
   the attack surface auditable. The page is a single HTML file with inline JS and SVG and works
   offline.
-  - The server binds to localhost only and requires a per-run token on every API call.
+  - The server binds to localhost only and requires a per-run session on every API call (see D14).
   - It checks the Host header against DNS rebinding and the Origin header against cross-site requests.
   - Bodies must be JSON (which rules out form-post CSRF), and are size-limited.
 - **Hand-placed topology for the demo, generated grid for real inventories.** A readable NetBrain or

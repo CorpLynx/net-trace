@@ -90,7 +90,7 @@ def test_bad_content_length_is_rejected(live, length):
     assert status in (400, 413)
 
 
-# L6: the token lives in the URL fragment and the X-Nettrace-Token header, never the query string
+# L6: the secret lives in the X-Nettrace-Token header or the session cookie, never the query string
 def _get(port, path, headers=None):
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     c.request("GET", path, headers=headers or {})
@@ -106,7 +106,7 @@ def test_query_string_token_is_refused_header_works(live):
 def test_app_html_reads_fragment_and_clears_it():
     assert "location.hash" in APP_HTML and "history.replaceState" in APP_HTML
     assert "location.search" not in APP_HTML
-    assert "sessionStorage" not in APP_HTML and "localStorage" not in APP_HTML
+    assert "sessionStorage" not in APP_HTML and "localStorage" not in APP_HTML and "prompt(" not in APP_HTML
 
 
 def test_logs_contain_no_token(capsys):

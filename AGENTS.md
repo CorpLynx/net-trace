@@ -43,6 +43,9 @@ and `--query` (JMESPath) accepted anywhere on the line.
      `advanced-routing` with `fib-lookup`. PAN-OS and SCM requests never follow redirects
      (`allow_redirects=False`; a 3xx is a `DeviceError`), so API keys and tokens go to the configured host only.
    - The web console accepts an exact command list only (no raw XML; Cisco = the allowlist above, nothing else).
+     Device I/O runs under a per-device lock (a second command to a busy device gets 429); the global `console_lock`
+     guards only the session table and rate limit, so one slow device never blocks the others. `App.history` is
+     under `history_lock`. POST bodies must arrive within `BODY_DEADLINE` (10 s) or the answer is 408.
    - Every request sent or refused is appended to the audit log (`src/nettrace/audit.py`,
      `~/.local/state/nettrace/audit.log`, override `NETTRACE_AUDIT_LOG`; tests must set it; a symlinked log or
      directory is never followed, the file is 0600; demo-lab runs add `"demo": true`). Requests only,
@@ -79,14 +82,19 @@ and `--query` (JMESPath) accepted anywhere on the line.
    lab (`nettrace.demo.lab.install()`) and tests plug in there, *below* the read-only guards. Driver,
    engine and guard code must never branch on "demo". `AwsEnv` with a backend still applies
    the same allowlist (`check_aws_operation`).
-7. **The web server stays local and authenticated.** It binds to 127.0.0.1, checks the per-run token
-   (`X-Nettrace-Token`), the Host and Origin headers, and JSON-only bodies up to 64 KiB. `POST /api/trace/cancel`
+7. **The web server stays local and authenticated.** It binds to 127.0.0.1, checks the per-run session
+   secret (the `X-Nettrace-Token` header for scripts/tests, or the `nettrace_session` cookie, which must be sent with the
+   custom header `X-Nettrace-Client: 1`), the Host and Origin headers, and JSON-only bodies up to 64 KiB. The cookie
+   (`HttpOnly; SameSite=Strict; Path=/`, session-only, no Domain/Max-Age) is issued by `GET /?c=<code>`, where the code is a
+   separate one-time login code (60 s, single use, memory only). No route mints codes; restart for a new one. `POST /api/trace/cancel`
    `{id}` is one of those authenticated routes: it only sets a cooperative cancel flag (`CancelToken`) that the
    engine checks beside the deadline; it never kills a thread, and it is audit-logged (`status=cancelled`). Don't add a
    `--host` option, CORS, or unauthenticated API routes. Console commands must keep going through
-   `CiscoClient.show` / `PanosClient.request`, so the guards apply. The tokenised URL is only printed;
-   `serve --open` (off by default; `--no-open` is a hidden no-op) launches the bare URL (the page asks for the token) via `launch_browser`, which drops
-   `NETTRACE_*`/`AWS_*` and credential-like names (`*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_KEY`, `*CRED*`) from the browser's environment. Never pass the token in argv or env. Console limits:
+   `CiscoClient.show` / `PanosClient.request`, so the guards apply. `serve` opens the browser by default (`--no-open` only prints the URL; `--open` is a no-op alias)
+   at `http://127.0.0.1:PORT/?c=<code>` via `launch_browser`, which drops
+   `NETTRACE_*`/`AWS_*` and credential-like names (`*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_KEY`, `*CRED*`) from the browser's environment.
+   The code is in argv (visible to `ps`), which is acceptable only because it is single-use and expires in 60 s. Never pass the session
+   secret in argv, env, a URL or a log; never log query strings. Console limits:
    one session per device, 1 s between commands, 60 s idle disconnect, 256 KiB output; Cisco SSH refuses
    logins for 5 min after an auth failure.
 8. **TLS and SSH stay verified.** `verify_tls: false` under `defaults:` or `panorama:` needs env
@@ -119,7 +127,7 @@ and `--query` (JMESPath) accepted anywhere on the line.
 - It is not yet known whether Prisma Access is managed by **Panorama** (device groups such as
   `Mobile_User_Device_Group`) or by **Strata Cloud Manager**. The code assumes SCM. This is roadmap
   item R2.
-- Test suite: `.venv/bin/pytest -q` (~422 tests: guards, hardening, audit/console scope, never-guess and robustness cases,
+- Test suite: `.venv/bin/pytest -q` (~446 tests: guards, hardening, audit/console scope, never-guess and robustness cases,
   ACL and netutil units, and all 12 demo presets). It uses the demo lab's simulators as the harness.
 
 ## Code map

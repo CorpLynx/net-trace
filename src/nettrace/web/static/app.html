@@ -249,17 +249,14 @@ const S = {boot:null, topo:null, nodes:{}, links:{}, entry:null, steps:[], k:-1,
 const badge = s => `<span class="pill ${esc(s)}"><span aria-hidden="true">${esc(GLYPH[s] || "•")}</span> ${esc(s)}</span>`;
 const setPressed = (sel, attr, val) => $$(sel).forEach(b => b.setAttribute("aria-pressed", String(b.dataset[attr] === val)));
 
-/* ===== B. token + API (token lives in memory only; no storage APIs) ===== */
-// The token arrives in the URL fragment (never sent to the server); keep it in memory only.
-// `serve --open` launches the bare URL (no token on any command line), so ask for it then.
+/* ===== B. session + API (the session is an HttpOnly cookie set by the one-time login link; no storage APIs) ===== */
 const HASH = new URLSearchParams(location.hash.slice(1));   // deep-link params (#preset=..&step=..) read at start-up
-const TOKEN = HASH.get("token")
-  || (prompt("Paste the token printed in the terminal by nettrace serve") || "").trim();
-HASH.delete("token");                                        // the token never stays in the address bar or history
+HASH.delete("token");                                        // old-style #token= links are ignored
 history.replaceState(null, "", location.pathname + (HASH.toString() ? "#" + HASH.toString() : ""));
+const SESSION_ENDED = "Session ended (the server was restarted). Run `nettrace serve` again, or open the URL it prints.";
 class ApiError extends Error { constructor(msg, status){ super(msg); this.status = status; } }
 function explain(status, msg){
-  if (status === 401) return "The token is missing or wrong. Reload this page and paste the token printed by `nettrace serve` (it changes every run).";
+  if (status === 401) return SESSION_ENDED;
   if (status === 429) return `${msg || "Too many requests."} Wait a moment and try again.`;
   if (status === 413 || status === 415) return `The request was rejected (${msg || status}). Reload the page and try again.`;
   if (status === 421 || status === 403) return "The server refused this page's Host/Origin. Open the exact 127.0.0.1 address printed by `nettrace serve`.";
@@ -267,7 +264,7 @@ function explain(status, msg){
 }
 async function api(path, body){
   let r;
-  try { r = await fetch(path, {method: body ? "POST" : "GET", headers: {"X-Nettrace-Token": TOKEN, ...(body ? {"Content-Type":"application/json"} : {})},
+  try { r = await fetch(path, {method: body ? "POST" : "GET", credentials: "same-origin", headers: {"X-Nettrace-Client": "1", ...(body ? {"Content-Type":"application/json"} : {})},
                                body: body ? JSON.stringify(body) : undefined}); }
   catch (e) { throw new ApiError("Cannot reach the nettrace server. Is `nettrace serve` still running? Restart it and reload this page.", 0); }
   const data = await r.json().catch(() => ({error: `HTTP ${r.status}`}));
@@ -726,7 +723,7 @@ function consoleNotice(dev){
 function consoleError(err, dev){
   let m = err.message;
   if (err.status === 429) m = "Too fast: the console allows one command per second per device. Wait a second and send it again.";
-  else if (err.status === 401) m = "Token rejected. Reload this page and paste the token printed by `nettrace serve`.";
+  else if (err.status === 401) m = SESSION_ENDED;
   else if (err.status === 0) m = err.message;
   else if (dev.platform === "cisco_iosxe" && /auth|login|cooldown|locked/i.test(m)) m += " (Cisco SSH logins pause for 5 minutes after an authentication failure. Check the device credentials in your environment, then retry later.)";
   return m;

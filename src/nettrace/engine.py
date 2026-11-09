@@ -216,6 +216,12 @@ class Tracer:
         if hit:
             nxt, intf = hit
             return DeviceAt(device=nxt.name, arrival_ip=eg.next_hop, arrival_interface=intf), None, "", None
+        claimed = self.inv.ambiguous_owners(eg.next_hop)
+        if claimed:  # never guess which device it is
+            why = (f"next hop {eg.next_hop} from {eg.device} is claimed by several devices ({', '.join(claimed)}); "
+                   "fix the duplicate address and run 'nettrace inventory discover' again")
+            return None, Outcome.INCOMPLETE, why, Hop(domain="engine", node=eg.device, component="next-hop",
+                                                       status=Status.UNKNOWN, summary=why)
         return None, Outcome.EXITED, (f"next hop {eg.next_hop} from {eg.device} is not in the inventory "
                                       "(run 'nettrace inventory discover' or add a link)"), None
 

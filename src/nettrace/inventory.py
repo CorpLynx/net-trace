@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import json
 import os
 import re
+import secrets
 import warnings
 from dataclasses import dataclass, field
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -182,6 +185,7 @@ class Inventory:
     prisma: PrismaConfig | None
     panorama: PanoramaConfig | None = None
     discovered: dict[str, dict[str, str]] = field(default_factory=dict)
+    ambiguous: dict[str, list[dict[str, str]]] = field(default_factory=dict)  # ip -> every claim (device, interface)
     trace_timeout: float = DEFAULT_TRACE_TIMEOUT  # overall seconds per trace; --timeout overrides
 
     # ---- lookups -------------------------------------------------------------
@@ -196,9 +200,11 @@ class Inventory:
         for dev in self.devices.values():
             if ip in dev.addresses:
                 return dev, None
+        if ip in self.ambiguous:  # several devices claim it: never pick one
+            return None
         hit = self.discovered.get(ip)
         if hit and hit.get("device") in self.devices:
-            return self.devices[hit["device"]], hit.get("interface")
+            return self.devices[hit["device"]], hit.get("interface") or None
         return None
 
     def network_for(self, ip: str) -> Network | None:
@@ -269,15 +275,124 @@ class Inventory:
     def cache_file(self) -> Path:
         return cache_dir() / "addresses.json"
 
-    def save_discovered(self, mapping: dict[str, dict[str, str]]) -> Path:
+    def ambiguous_owners(self, ip: str) -> list[str]:
+        """Names of the devices that all claim `ip` in the discovery cache (empty unless it is ambiguous)."""
+        return sorted({c["device"] for c in self.ambiguous.get(ip, [])})
+
+    def merge_discovered(self, found: dict[str, dict[str, str]]) -> Path:
+        """Merge {device: {ip: interface}} into the cache. The devices in `found` replace their old entries; others
+        are kept as the file has them now (re-read under a file lock, so concurrent `inventory discover` runs do
+        not lose each other's entries). An IP claimed by two devices is kept for neither and listed as ambiguous.
+        The file is replaced atomically (temp file 0600 in the same directory, then os.replace)."""
         path = self.cache_file()
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(json.dumps(mapping, indent=2, sort_keys=True))
-        os.chmod(path, 0o600)  # an existing file keeps its old mode otherwise
-        self.discovered = mapping
+        with _cache_lock(path):
+            addrs, amb = _parse_cache(_read_json(path), None)
+            claims: dict[str, list[dict[str, str]]] = {ip: list(v) for ip, v in amb.items()}
+            for ip, v in addrs.items():
+                claims.setdefault(ip, []).append(v)
+            for ip in list(claims):  # drop the refreshed devices' old claims
+                claims[ip] = [c for c in claims[ip] if c["device"] not in found]
+            for dev, ips in found.items():
+                for ip, intf in ips.items():
+                    claims.setdefault(ip, []).append({"device": dev, "interface": intf})
+            addrs, amb = {}, {}
+            for ip, cl in claims.items():
+                uniq = {c["device"]: c for c in cl}
+                if len(uniq) == 1:
+                    addrs[ip] = next(iter(uniq.values()))
+                elif uniq:
+                    amb[ip] = sorted(uniq.values(), key=lambda c: c["device"])
+            tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(json.dumps({"addresses": addrs, "ambiguous": amb}, indent=2, sort_keys=True))
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, path)
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
+        self.discovered, self.ambiguous = addrs, amb
         return path
+
+
+@contextlib.contextmanager
+def _cache_lock(path: Path) -> Iterator[None]:
+    """Exclusive advisory lock on a sibling file (POSIX flock; a no-op where fcntl does not exist)."""
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover
+        yield
+        return
+    fd = os.open(path.with_name(path.name + ".lock"), os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)  # closing releases the lock
+
+
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+INTERFACE_RE = re.compile(r"[A-Za-z0-9_./:@-]{1,64}")
+
+
+def _parse_cache(raw: Any, devices: Any, *, complain: bool = False) -> tuple[dict[str, dict[str, str]], dict[str, list[dict[str, str]]]]:
+    """Validate a loaded discovery cache. Entries must have a canonical IP key, a device (in `devices` when given) and a
+    short safe interface string; anything else is dropped (with a warning when `complain`). Reads the old flat
+    {ip: {device, interface}} layout too."""
+    def drop(what: str) -> None:
+        if complain:
+            warnings.warn(f"discovery cache: ignoring {what}", stacklevel=3)
+
+    def claim(ip: Any, v: Any) -> dict[str, str] | None:
+        try:
+            ok = isinstance(ip, str) and str(ipaddress.ip_address(ip)) == ip
+        except ValueError:
+            ok = False
+        if not ok:
+            drop(f"invalid address {str(ip)[:40]!r}")
+        elif not isinstance(v, dict) or not isinstance(v.get("device"), str) or (devices is not None and v["device"] not in devices):
+            drop(f"{ip}: not an inventory device")
+        elif not isinstance(v.get("interface", ""), str) or (v.get("interface") and not INTERFACE_RE.fullmatch(v["interface"])):
+            drop(f"{ip}: unsafe interface name")
+        else:
+            return {"device": v["device"], "interface": v.get("interface", "")}
+        return None
+
+    addrs: dict[str, dict[str, str]] = {}
+    amb: dict[str, list[dict[str, str]]] = {}
+    if raw is None:
+        return addrs, amb
+    if not isinstance(raw, dict):
+        drop("a file that is not a JSON object")
+        return addrs, amb
+    flat = "addresses" not in raw and "ambiguous" not in raw
+    addr_raw = raw if flat else raw.get("addresses")
+    if not isinstance(addr_raw, dict):
+        drop("addresses that are not an object")
+        addr_raw = {}
+    for ip, v in addr_raw.items():
+        c = claim(ip, v)
+        if c:
+            addrs[ip] = c
+    amb_raw = {} if flat else raw.get("ambiguous") or {}
+    for ip, lst in (amb_raw.items() if isinstance(amb_raw, dict) else []):
+        cl = [c for c in (claim(ip, v) for v in lst) if c] if isinstance(lst, list) else []
+        if len({c["device"] for c in cl}) > 1:
+            amb[ip] = cl
+        elif cl:
+            drop(f"{ip}: ambiguous entry with fewer than two devices")
+    for ip in amb:  # ambiguous wins over a plain entry
+        addrs.pop(ip, None)
+    return addrs, amb
 
 
 # ---- loading ---------------------------------------------------------------------
@@ -540,8 +655,8 @@ def load_inventory(path: Path | str | None = None) -> Inventory:
                     panorama=panorama, trace_timeout=float(timeout))
     cache = inv.cache_file()
     if cache.exists():
-        try:
-            inv.discovered = json.loads(cache.read_text())
-        except (OSError, ValueError):
-            inv.discovered = {}
+        raw = _read_json(cache)
+        if raw is None:
+            warnings.warn(f"discovery cache {cache} is unreadable; ignoring it", stacklevel=2)
+        inv.discovered, inv.ambiguous = _parse_cache(raw, devices, complain=True)
     return inv
