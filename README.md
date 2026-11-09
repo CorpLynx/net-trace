@@ -31,10 +31,20 @@ nettrace trace run --source 10.1.1.10 --destination 10.20.1.50 --port 443
 ## Try it: demo lab and web UI
 
 ```bash
-nettrace demo serve            # opens http://127.0.0.1:8765 against the simulated Acme Corp lab
+nettrace demo serve            # serves http://127.0.0.1:8765 against the simulated Acme Corp lab
 ```
 
-![nettrace web UI](docs/demo-ui.png)
+It prints a URL with a one-time token in the fragment (`#token=...`). Open that URL, or add `--open` to launch
+the browser at the bare address and paste the printed token when the page asks.
+
+A blocked trace: the verdict bar says where it stopped and why, the topology marks the blocking device, and the
+hop list and inspector show the evidence behind each verdict.
+
+![nettrace web UI: a blocked trace](docs/demo-ui.png)
+
+A passing trace plays as a packet flow along the path (Space plays or pauses, arrows step, `R` replays):
+
+![packet flow animation mid-trace](docs/demo-ui-flow.png)
 
 **The demo lab** is a simulated hybrid network built to resemble a mixed Cisco / Palo Alto / Prisma
 Access / AWS environment:
@@ -70,7 +80,11 @@ so any source and destination you type gets a real answer, not just the presets.
 - **Scenarios and history.** 12 preset scenarios with an expected outcome each (see
   `nettrace demo scenarios`), plus a history of recent traces.
 - **Deep links.** `#preset=branch-smb&step=last&node=core-rtr1` opens a scenario at a given step
-  with a node selected; `#trace=<id>` reopens a trace from history.
+  with a node selected; `#trace=<id>` reopens a trace from history. Put the token first:
+  `#token=...&preset=branch-smb&step=last`. The token is removed from the address bar once the page loads.
+
+The Device tab has a read-only console for the simulated device. It lists the allowed commands, refuses the rest,
+and logs refusals:
 
 ![device console](docs/demo-ui-console.png)
 

@@ -252,9 +252,11 @@ const setPressed = (sel, attr, val) => $$(sel).forEach(b => b.setAttribute("aria
 /* ===== B. token + API (token lives in memory only; no storage APIs) ===== */
 // The token arrives in the URL fragment (never sent to the server); keep it in memory only.
 // `serve --open` launches the bare URL (no token on any command line), so ask for it then.
-const TOKEN = new URLSearchParams(location.hash.slice(1)).get("token")
+const HASH = new URLSearchParams(location.hash.slice(1));   // deep-link params (#preset=..&step=..) read at start-up
+const TOKEN = HASH.get("token")
   || (prompt("Paste the token printed in the terminal by nettrace serve") || "").trim();
-if (location.hash) history.replaceState(null, "", location.pathname);
+HASH.delete("token");                                        // the token never stays in the address bar or history
+history.replaceState(null, "", location.pathname + (HASH.toString() ? "#" + HASH.toString() : ""));
 class ApiError extends Error { constructor(msg, status){ super(msg); this.status = status; } }
 function explain(status, msg){
   if (status === 401) return "The token is missing or wrong. Reload this page and paste the token printed by `nettrace serve` (it changes every run).";
@@ -603,7 +605,7 @@ function goto(k, animate = true){
   if (animate && !RM.matches && from >= 0 && from !== k) reveal(from, k); else S.born = {};
   drawOverlay(k); syncScrub(k);
   $$("#events tr.ev").forEach((r, i) => { r.classList.toggle("cur", i === k); r.classList.toggle("future", i > k); if (i === k) r.setAttribute("aria-current", "step"); else r.removeAttribute("aria-current"); });
-  const row = $$("#events tr.ev")[k]; if (row) row.scrollIntoView({block: "nearest"});
+  revealRow($$("#events tr.ev")[k], "nearest");
   $("#stepinfo").textContent = `step ${k + 1} / ${S.steps.length}`;
   const st = S.steps[k];
   if (st.hop) { selectHop(st.hop.index, false); } else showFinal();
@@ -660,7 +662,7 @@ function toggleDetail(b){
 function highlightHopsAt(nodeId){
   const hn = S.entry ? S.entry.overlay.hop_nodes : {}, rows = $$("#events tr.ev").filter(r => r.dataset.hopidx && hn[r.dataset.hopidx] === nodeId);
   $$("#events tr.hl").forEach(r => r.classList.remove("hl")); rows.forEach(r => r.classList.add("hl"));
-  if (rows.length) rows[0].scrollIntoView({block: "center"});
+  if (rows.length) revealRow(rows[0], "center");
   return rows.length;
 }
 
@@ -834,11 +836,21 @@ addEventListener("keydown", e => {
   else if (e.key === "+" || e.key === "=") zoomCentre(1.25); else if (e.key === "-") zoomCentre(0.8);
   else if (e.key === "Escape") dimOffPath(false);
 });
+// Scroll only the hop list, never the page (scrollIntoView also scrolls the window on the stacked layout and hid the form),
+// and keep the row clear of the sticky header.
+function revealRow(row, mode){
+  const box = $("#events"); if (!row || !box) return;
+  const head = box.querySelector("th"), pad = head ? head.offsetHeight : 0;
+  const top = row.offsetTop, bottom = top + row.offsetHeight, view = box.clientHeight - pad;
+  if (mode === "center") box.scrollTop = top - pad - (view - row.offsetHeight) / 2;
+  else if (top - pad < box.scrollTop) box.scrollTop = top - pad;
+  else if (bottom > box.scrollTop + box.clientHeight) box.scrollTop = bottom - box.clientHeight;
+}
 function fatal(msg){ document.body.innerHTML = `<div class="fatal" role="alert"><b>nettrace could not start.</b><p>${esc(msg)}</p></div>`; }
 async function startup(){
   try { S.boot = await api("/api/bootstrap"); } catch (e) { fatal(e.message); return; }
   S.topo = S.boot.topology; renderLeft(); renderTopology(); renderPane(); refreshHistory(); syncProto();
-  const h = new URLSearchParams(location.hash.slice(1));
+  const h = HASH;
   if (h.get("preset")) {
     const p = S.boot.presets.find(x => x.id === h.get("preset"));
     if (p) { fillForm(p.flow); try { const e = await api("/api/trace", {...p.flow, preset: p.id}); loadEntry(e, {step: h.get("step") || undefined, autoplay: !h.get("step")}); refreshHistory();
