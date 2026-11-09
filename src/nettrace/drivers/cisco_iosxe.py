@@ -149,7 +149,7 @@ class CiscoClient:
                 audit.log("ssh", self.device.name, command, "error")
                 raise
             audit.log("ssh", self.device.name, command, "ok")
-            if re.search(r"^% (Invalid|Incomplete|Ambiguous)", out, re.M):
+            if re.search(r"^% (?!Network not in table)|--More--", out, re.M):  # any IOS error line
                 raise DeviceError(f"{self.device.name}: '{command}' rejected: {out.strip().splitlines()[0]}")
             self._cache[command] = out
             self.evidence.append(Evidence(self.device.name, command, truncate(out.strip(), EVIDENCE_CHARS)))
@@ -169,7 +169,10 @@ class CiscoClient:
 
     def cef(self, ip: str, vrf: str | None) -> CefResult:
         ipaddress.ip_address(ip)
-        return parse_cef(self.show(f"show ip cef {self._vrf(vrf)}{ip}"))
+        result = parse_cef(self.show(f"show ip cef {self._vrf(vrf)}{ip}"))
+        if result.prefix is None and not result.entries:  # a real "no route" reply still names a prefix or says so
+            raise DeviceError(f"{self.device.name}: 'show ip cef {ip}' returned output nettrace could not parse")
+        return result
 
     def route(self, ip: str, vrf: str | None) -> tuple[str | None, str | None]:
         ipaddress.ip_address(ip)

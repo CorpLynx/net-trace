@@ -7,6 +7,7 @@ line of defence: the credentials you give nettrace should also be read-only
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from typing import Any
 
@@ -16,14 +17,37 @@ from nettrace import audit
 from nettrace.errors import ReadOnlyViolation
 
 # --- Cisco ---------------------------------------------------------------------
-# Only "show" commands built from a conservative character set. Pipes, semicolons
-# and newlines are rejected so a value can never chain a second command.
-_CISCO_ALLOWED = re.compile(r"^show [A-Za-z0-9 ./:_\-]+$")
+# ALLOWLIST of full-word commands (IOS accepts abbreviations such as `show run`, so a deny list or a
+# "starts with show" rule cannot work). Every word is matched exactly, case-sensitively, single-spaced;
+# arguments are only an IPv4 address or a safe_token-style name. Pipes, ';', '?', newlines and anything
+# else cannot match. Keep in step with what drivers/cisco_iosxe.py sends and the web console QUICK list.
+_TOK = r"[A-Za-z0-9._:/\-]{1,128}"
+_IPV4 = r"[0-9]{1,3}(?:\.[0-9]{1,3}){3}"
+_CISCO_ALLOWED = tuple(re.compile(p) for p in (
+    rf"show ip route(?: vrf {_TOK})?(?: {_IPV4})?",
+    rf"show ip cef(?: vrf {_TOK})? {_IPV4}",
+    rf"show ip arp(?: vrf {_TOK})?(?: {_IPV4})?",
+    r"show ip interface brief",
+    rf"show ip interface {_TOK}",
+    rf"show ip access-lists(?: {_TOK})?",
+    r"show interfaces description",
+    r"show version",
+    r"show vrf",
+))
+_CISCO_MAX = 400
 
 
 def check_cisco_command(command: str) -> str:
-    if not _CISCO_ALLOWED.fullmatch(command):
-        raise ReadOnlyViolation(f"refusing to send non read-only Cisco command: {command!r}")
+    ok = (isinstance(command, str) and len(command) <= _CISCO_MAX and command.isascii()
+          and any(p.fullmatch(command) for p in _CISCO_ALLOWED))
+    if ok:
+        try:
+            for ip in re.findall(_IPV4, command):
+                ipaddress.ip_address(ip)
+        except ValueError:
+            ok = False
+    if not ok:
+        raise ReadOnlyViolation(f"refusing to send Cisco command that is not on the read-only allowlist: {command!r}")
     return command
 
 
@@ -41,7 +65,12 @@ _PANOS_TEST_CHILDREN = ("security-policy-match", "nat-policy-match", "routing", 
 _PANOS_TEST_ROUTING = ("fib-lookup",)
 
 
-_PANOS_XPATH = re.compile(r"/config/(devices|shared|panorama)/.+")  # never /config or mgt-config
+# Strict: path segments with an optional [@name='..'] / [@uuid='..'] predicate, under devices/shared/panorama.
+# No '..', '|', '*', '//', 'or', functions or other predicates, so it can never reach /config/mgt-config.
+_PANOS_XPATH = re.compile(
+    r"/config/(?:devices|shared|panorama)"
+    r"(?:/[A-Za-z0-9_][A-Za-z0-9_.:\-]*(?:\[@(?:name|uuid)='[A-Za-z0-9 _.:\-]{1,128}'\])?)+"
+)
 
 
 def check_panos_request(params: dict[str, str], panorama: bool = False) -> dict[str, str]:

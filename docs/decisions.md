@@ -30,6 +30,12 @@ change can be judged against the original reason. Newest first.
 - **TLS:** `verify_tls: false` under `defaults:` or `panorama:` is refused unless
   `NETTRACE_ALLOW_INSECURE_TLS=1`; per-device `false` still works (with the warning). A string must be
   an existing CA bundle path at inventory load.
+- **Cisco commands are an allowlist, not a deny list (re-audit R1):** IOS accepts abbreviations (`show run`),
+  so `readonly.check_cisco_command` matches only full-word commands (a short fixed set plus IP / `safe_token`
+  arguments) and the web console uses the same guard. The demo simulator expands abbreviations like IOS.
+- **The AWS session policy fails closed (R6):** it ships as package data (`nettrace/data/`, equal to `iam/`;
+  a test checks it) and AssumeRole is refused if it cannot be loaded or exceeds 2048 characters, unless
+  `NETTRACE_ALLOW_NO_SESSION_POLICY=1`.
 
 ## D12. Demo lab simulates transports; web UI is a local stdlib server (2026-11-08, v0.4.0)
 The owner asked for a demo architecture to show the tool off, with a live localhost UI in the

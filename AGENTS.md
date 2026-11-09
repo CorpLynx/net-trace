@@ -31,7 +31,8 @@ and `--query` (JMESPath) accepted anywhere on the line.
 
 1. **Read-only, always.** Nothing nettrace sends may change state. This is enforced in code by
    `src/nettrace/readonly.py`, and every new request path must go through it:
-   - Cisco: `show ...` only, with a restricted character set (no pipes, `;` or newlines).
+   - Cisco: an ALLOWLIST of full-word `show` commands (`readonly.check_cisco_command`; IOS abbreviates, so never a
+     deny list or prefix rule); arguments are only IPv4 addresses and `safe_token` names. Same guard for the console.
    - PAN-OS/Panorama XML API: `type=op` with `<show>` or `<test>` roots only, or `type=config` with
      `action=get|show`. Never `set`, `edit`, `delete`, `commit`, `request` or `<request>`. Only the
      parameters `type, cmd, action, xpath, target, vsys` are allowed, and `target` must be a plain
@@ -41,14 +42,14 @@ and `--query` (JMESPath) accepted anywhere on the line.
    - PAN-OS `<test>` may only contain `security-policy-match`, `nat-policy-match`, or `routing` /
      `advanced-routing` with `fib-lookup`. PAN-OS and SCM requests never follow redirects
      (`allow_redirects=False`; a 3xx is a `DeviceError`), so API keys and tokens go to the configured host only.
-   - The web console accepts an exact command list only (no raw XML; Cisco free-form `show` denies
-     running-config, startup-config, tech-support, archive, crypto, snmp, aaa, key, secret, password, log).
+   - The web console accepts an exact command list only (no raw XML; Cisco = the allowlist above, nothing else).
    - Every request sent or refused is appended to the audit log (`src/nettrace/audit.py`,
      `~/.local/state/nettrace/audit.log`, override `NETTRACE_AUDIT_LOG`; tests must set it). Requests only,
      never responses or credentials. New request paths must call `audit.log` / `audit.refused`.
    - AWS: a botocore `before-call` hook allows only an exact allowlist of (service, operation) pairs
      (the EC2 reads in `iam/nettrace-readonly-policy.json`) and `sts:AssumeRole` (900 s, that policy as the
-     inline session `Policy`, session name `nettrace-<user>-<host>`, re-assumed once on `ExpiredToken`;
+     inline session `Policy`, which fails closed: packaged in `nettrace/data/`, AssumeRole is refused if it cannot be
+     loaded or is over 2048 chars unless `NETTRACE_ALLOW_NO_SESSION_POLICY=1`; session name `nettrace-<user>-<host>`, re-assumed once on `ExpiredToken`;
      cross-account roles need `external_id_env` when `aws.base_account_id` is set, else a warning).
      Do **not** add Reachability Analyzer or Network Access Analyzer calls. Those
      create resources and cost money per run (see `docs/decisions.md`).
@@ -117,7 +118,7 @@ and `--query` (JMESPath) accepted anywhere on the line.
 - It is not yet known whether Prisma Access is managed by **Panorama** (device groups such as
   `Mobile_User_Device_Group`) or by **Strata Cloud Manager**. The code assumes SCM. This is roadmap
   item R2.
-- Test suite: `.venv/bin/pytest -q` (291 tests: guards, hardening, audit/console scope, never-guess and robustness cases,
+- Test suite: `.venv/bin/pytest -q` (~407 tests: guards, hardening, audit/console scope, never-guess and robustness cases,
   ACL and netutil units, and all 12 demo presets). It uses the demo lab's simulators as the harness.
 
 ## Code map

@@ -12,6 +12,35 @@ from nettrace.demo.lab import CISCO
 INVALID = "                ^\n% Invalid input detected at '^' marker.\n"
 
 
+# Real IOS accepts any unambiguous prefix of every keyword (`show run` = `show running-config`). The
+# simulator does the same so a guard that only matches full words is exercised realistically.
+_KEYWORDS = [k.split() for k in (
+    "show ip cef", "show ip route", "show ip interface brief", "show ip interface", "show ip arp",
+    "show ip access-lists", "show access-lists", "show version", "show running-config", "show startup-config",
+    "show derived-config", "show tech-support", "show archive", "show logging", "show snmp user",
+    "show crypto pki certificates", "show aaa servers", "show interfaces description", "show interface description",
+    "show vrf",
+)]
+
+
+def expand_abbreviations(cmd: str) -> str | None:
+    """Canonical full-word command, or None when a keyword is ambiguous. Unknown words pass through."""
+    toks, out, cands = cmd.split(), [], _KEYWORDS
+    for i, t in enumerate(toks):
+        live = [k for k in cands if len(k) > i and k[i].startswith(t)]
+        if not live:
+            out.extend(toks[i:])
+            break
+        exact = [k for k in live if k[i] == t]
+        pool = exact or live
+        words = {k[i] for k in pool}
+        if len(words) != 1:
+            return None
+        out.append(words.pop())
+        cands = pool
+    return " ".join(out)
+
+
 class SimConnection:
     def __init__(self, name: str):
         self.name = name
@@ -25,7 +54,9 @@ class SimConnection:
 
     # ---- dispatcher -------------------------------------------------------------------------
     def send_command(self, command: str, read_timeout: int = 60) -> str:
-        cmd = " ".join(command.split())
+        cmd = expand_abbreviations(" ".join(command.split()))
+        if cmd is None:
+            return "% Ambiguous command:  " + repr(command) + "\n"
         handlers = [
             (r"show ip cef (?:vrf \S+ )?(\S+)", self._cef),
             (r"show ip route (?:vrf \S+ )?(\d+\.\d+\.\d+\.\d+)", self._route_one),
@@ -37,7 +68,10 @@ class SimConnection:
             (r"show ip access-lists (\S+)", self._acl),
             (r"show (?:ip )?access-lists", lambda: "".join(self._acl(n) for n in self.dev["acls"])),
             (r"show version", lambda: self._version()),
-            (r"show running-config", lambda: self._running()),
+            (r"show (?:running-config|startup-config|derived-config)", lambda: self._running()),
+            (r"show (?:tech-support|archive|logging|snmp user|crypto pki certificates|aaa servers)",
+             lambda: "! simulated sensitive output (never reachable through the nettrace guard)\n"),
+            (r"show vrf", lambda: "  Name      Default RD  Protocols  Interfaces\n"),
             (r"show interfaces? description", lambda: self._descriptions()),
         ]
         for pattern, fn in handlers:

@@ -60,11 +60,6 @@ PANOS_CLI = {
     "show routing route": ["show", "routing", "route"],
     "show high-availability state": ["show", "high-availability", "state"],
 }
-# Free-form Cisco `show` stays, but never anything that reveals configuration secrets or bulk dumps.
-CISCO_DENY = ("running-config", "startup-config", "tech-support", "archive", "crypto", "snmp", "aaa", "key",
-              "secret", "password", "log")
-
-
 class App:
     def __init__(self, inv: Inventory, *, demo: bool):
         self.inv = inv
@@ -225,9 +220,8 @@ class App:
         with self.console_lock, audit.mode("console"):
             try:
                 if dev.platform == "cisco_iosxe":
-                    denied = next((t for t in CISCO_DENY if t in command.lower()), None)
-                    if denied:
-                        raise ReadOnlyViolation(f"console does not allow commands containing {denied!r}")
+                    if not re.fullmatch(r"[ -~]*", str(body.get("command", ""))):
+                        raise ReadOnlyViolation("console accepts printable ASCII, single-line commands only")
                     client = self.console_clients.device(dev)
                     client._cache.pop(command, None)  # console always re-runs
                     output = client.show(command)

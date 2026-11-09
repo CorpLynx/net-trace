@@ -712,12 +712,13 @@ function selectNode(id){
 }
 
 /* ===== K. device pane + read-only console ===== */
-const CISCO_DENY = ["running-config", "startup-config", "tech-support", "archive", "crypto", "snmp", "aaa", "key", "secret", "password", "log"];
+const CISCO_ALLOWED = ["show ip route [A.B.C.D]", "show ip cef A.B.C.D", "show ip arp [A.B.C.D]", "show ip interface brief",
+  "show ip interface <name>", "show ip access-lists [name]", "show interfaces description", "show version", "show vrf"];
 const PANOS_ALLOWED = ["show system info", "show interface all", "show routing route", "show high-availability state",
   "test security-policy-match <key value ...>", "test nat-policy-match <key value ...>", "test routing fib-lookup <key value ...>"];
 function consoleNotice(dev){
   const list = dev.platform === "cisco_iosxe"
-    ? `<li><code>show ...</code> commands only.</li><li>Refused if the command contains: ${CISCO_DENY.map(w => `<code>${esc(w)}</code>`).join(", ")}.</li>`
+    ? CISCO_ALLOWED.map(c => `<li><code>${esc(c)}</code></li>`).join("") + `<li>Full words only (no abbreviations, pipes or options); anything else is refused.</li>`
     : PANOS_ALLOWED.map(c => `<li><code>${esc(c)}</code></li>`).join("") + `<li>Raw XML is not accepted.</li>`;
   return `<div class="note" role="note"><b>Read-only console, limited commands.</b> Nothing here can change the device; refused commands are logged.<ul>${list}`
     + `<li>One command per second per device, up to 400 characters; the session closes after 60 s idle; output is capped at 256 KiB.</li></ul></div>`;

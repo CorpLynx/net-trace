@@ -153,7 +153,7 @@ def test_untrusted_fields_are_always_escaped():
 
 def test_console_notice_lists_allowed_commands_and_limits():
     for word in ("Read-only console, limited commands.", "show system info", "security-policy-match", "fib-lookup",
-                 "running-config", "One command per second", "256 KiB", "Copy output", r"\[truncated\]"):
+                 "show ip cef A.B.C.D", "One command per second", "256 KiB", "Copy output", r"\[truncated\]"):
         assert word in APP_HTML, word
     assert "err.status === 429" in APP_HTML and "err.status === 401" in APP_HTML
     assert "5 minutes after an authentication failure" in APP_HTML

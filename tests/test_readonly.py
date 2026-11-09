@@ -13,8 +13,10 @@ from nettrace.readonly import (
 
 
 # ---- Cisco ----
-@pytest.mark.parametrize("cmd", ["show ip route 10.0.0.1", "show ip access-lists ACL_IN",
-                                 "show running-config interface Gi0/0/1"])
+@pytest.mark.parametrize("cmd", ["show ip route 10.0.0.1", "show ip access-lists ACL_IN", "show ip route vrf A 10.0.0.1",
+                                 "show ip cef vrf A 10.0.0.1", "show ip arp 10.0.0.1", "show ip interface brief",
+                                 "show ip interface Gi0/0/1.100", "show interfaces description", "show version",
+                                 "show vrf", "show ip route", "show ip access-lists"])
 def test_cisco_show_allowed(cmd):
     assert check_cisco_command(cmd) == cmd
 

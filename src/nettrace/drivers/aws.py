@@ -10,9 +10,9 @@ import os
 import re
 import socket
 import warnings
+from importlib import resources
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from nettrace import audit
@@ -25,7 +25,7 @@ from nettrace.steps import AwsAt, DeviceAt, PrismaAt, StepResult
 
 MAX_AWS_STEPS = 40
 ASSUME_DURATION = 900  # seconds; the shortest STS allows. Expired sessions are re-assumed once.
-_SESSION_POLICY_FILE = Path(__file__).resolve().parents[3] / "iam" / "nettrace-readonly-policy.json"
+_SESSION_POLICY_NAME = "nettrace-readonly-policy.json"  # packaged in nettrace/data
 _SESSION_POLICY_MAX = 2048  # STS limit on the packed inline session policy (characters)
 
 
@@ -51,18 +51,24 @@ class AmbiguousEni(NetTraceError):
 
 
 def session_policy() -> str | None:
-    """The read-only IAM policy as a compact inline session policy, or None (with a warning) if it
-    cannot be used. shortcut: the file is not packaged in wheels (editable installs only); then the
-    role's own permissions are the only limit. Upgrade: ship the policy as package data."""
+    """The read-only IAM policy as a compact inline session policy. Fails closed: if it cannot be
+    loaded or exceeds the STS limit, raise CredentialError (no AssumeRole without it) unless the env
+    NETTRACE_ALLOW_NO_SESSION_POLICY=1 is set, which warns and returns None."""
     try:
-        doc = json.dumps(json.loads(_SESSION_POLICY_FILE.read_text()), separators=(",", ":"))
-    except (OSError, ValueError):
-        warnings.warn(f"{_SESSION_POLICY_FILE} not readable: AssumeRole without a session policy", stacklevel=2)
+        doc = json.dumps(json.loads(resources.files("nettrace.data").joinpath(_SESSION_POLICY_NAME).read_text()),
+                         separators=(",", ":"))
+        problem = (f"session policy exceeds the {_SESSION_POLICY_MAX}-character STS limit"
+                   if len(doc) > _SESSION_POLICY_MAX else "")
+    except (OSError, ValueError, ModuleNotFoundError):
+        doc, problem = "", "session policy file nettrace/data/" + _SESSION_POLICY_NAME + " could not be loaded"
+    if not problem:
+        return doc
+    if os.environ.get("NETTRACE_ALLOW_NO_SESSION_POLICY") == "1":
+        warnings.warn(f"{problem}: AssumeRole without a session policy (NETTRACE_ALLOW_NO_SESSION_POLICY=1)",
+                      stacklevel=2)
         return None
-    if len(doc) > _SESSION_POLICY_MAX:
-        warnings.warn("session policy exceeds the 2048-character STS limit: AssumeRole without it", stacklevel=2)
-        return None
-    return doc
+    raise CredentialError(f"{problem}; refusing to AssumeRole without it "
+                          "(set NETTRACE_ALLOW_NO_SESSION_POLICY=1 to accept the role's full permissions)")
 
 
 # ==== sessions ======================================================================
@@ -201,14 +207,14 @@ class AwsEnv:
         targets = only or self.targets()
         vpc = [{"Name": "vpc-id", "Values": [vpc_id]}] if vpc_id else []
 
-        def probe(t: tuple[str, str]) -> tuple[str, str, dict[str, Any]] | None:
+        def probe(t: tuple[str, str]) -> list[tuple[str, str, dict[str, Any]]]:
             acct, region = t
+            seen: dict[str, dict[str, Any]] = {}
             for flt in ("addresses.private-ip-address", "association.public-ip"):
-                enis = self.call(acct, region, "describe_network_interfaces",
-                                 Filters=[{"Name": flt, "Values": [ip]}, *vpc]).get("NetworkInterfaces", [])
-                if enis:
-                    return acct, region, enis[0]
-            return None
+                for eni in self.call(acct, region, "describe_network_interfaces",
+                                     Filters=[{"Name": flt, "Values": [ip]}, *vpc]).get("NetworkInterfaces", []):
+                    seen.setdefault(eni["NetworkInterfaceId"], eni)  # same ENI via both filters counts once
+            return [(acct, region, eni) for eni in seen.values()]
 
         if len(targets) == 1:
             hits = [probe(targets[0])]
@@ -216,9 +222,8 @@ class AwsEnv:
             with ThreadPoolExecutor(max_workers=min(16, len(targets) or 1)) as pool:
                 hits = list(pool.map(probe, targets))
         found: dict[tuple[str, str], tuple[str, str, dict[str, Any]]] = {}
-        for hit in hits:  # the same ENI seen from two accounts (shared subnets) counts once
-            if hit:
-                found.setdefault((hit[1], hit[2]["NetworkInterfaceId"]), hit)
+        for hit in (h for hs in hits for h in hs):  # the same ENI seen from two accounts (shared subnets) counts once
+            found.setdefault((hit[1], hit[2]["NetworkInterfaceId"]), hit)
         if len(found) > 1:
             where = "; ".join(f"{e['NetworkInterfaceId']} ({a}/{r}, {e.get('VpcId')})" for a, r, e in found.values())
             raise AmbiguousEni(f"{ip} is owned by {len(found)} ENIs (overlapping address space): {where}. "

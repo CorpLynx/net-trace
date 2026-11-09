@@ -41,18 +41,19 @@ def emit(console: Console, data: Any, fmt: str, query: str | None = None, *, ver
         console.print_json(json.dumps(plain, default=str))
     elif fmt == "text":
         for line in _text_lines(plain):
-            console.print(line, markup=False, highlight=False, soft_wrap=True)
+            console.print(clean(line), markup=False, highlight=False, soft_wrap=True)
     else:
         render_generic(console, plain)
 
 
 def _text_lines(data: Any) -> list[str]:
     if isinstance(data, dict) and "Hops" in data and "Outcome" in data:
-        lines = [f"OUTCOME\t{data['Outcome']}\t{data['Reason']}"]
+        lines = [f"OUTCOME\t{_cell(data['Outcome'])}\t{_cell(data['Reason'])}"]
         for h in data["Hops"]:
-            lines.append("\t".join(["HOP", str(h["index"]), h["status"], h["domain"], h["node"], h["component"],
-                                    h.get("ingress") or "-", h.get("egress") or "-", h["summary"], h.get("policy") or "-"]))
-        lines += [f"WARNING\t{w}" for w in data.get("Warnings", [])]
+            lines.append("\t".join(["HOP", _cell(h["index"]), _cell(h["status"]), _cell(h["domain"]), _cell(h["node"]),
+                                    _cell(h["component"]), _cell(h.get("ingress") or "-"), _cell(h.get("egress") or "-"),
+                                    _cell(h["summary"]), _cell(h.get("policy") or "-")]))
+        lines += [f"WARNING\t{_cell(w)}" for w in data.get("Warnings", [])]
         return lines
     if isinstance(data, list):
         out = []
@@ -65,6 +66,11 @@ def _text_lines(data: Any) -> list[str]:
     if isinstance(data, dict):
         return [f"{k}\t{_scalar(v)}" for k, v in data.items()]
     return [_scalar(data)]
+
+
+def _cell(v: Any) -> str:
+    """One tab-separated field: control characters removed and no tab/newline that would split the record."""
+    return re.sub(r"[\t\n]", " ", clean(str(v)))
 
 
 def _scalar(v: Any) -> str:
@@ -112,9 +118,9 @@ def render_trace(console: Console, result: TraceResult, *, verbose: bool = False
     table.add_column("Policy / NAT", ratio=3, overflow="fold")
     first_block = next((h.index for h in result.hops if h.status == Status.BLOCK), None)
     for h in result.hops:
-        where = Text(f"{h.node}\n", style="bold")
+        where = Text(clean(f"{h.node}\n"), style="bold")
         where.append(f"{h.domain} {h.component}", style="dim")
-        io = " / ".join(x for x in (h.ingress or "-", h.egress or "-"))
+        io = " / ".join(clean(x) for x in (h.ingress or "-", h.egress or "-"))
         decision = Text(clean(h.summary))
         if h.details and verbose:
             for d in h.details:
@@ -123,7 +129,7 @@ def render_trace(console: Console, result: TraceResult, *, verbose: bool = False
         if h.nat:
             policy = f"{policy}\nNAT: {h.nat}" if policy else f"NAT: {h.nat}"
         style = "on grey19" if h.index == first_block else ""
-        table.add_row(str(h.index), Text(h.status.value, style=STATUS_STYLE[h.status]), where, io if io != "- / -" else "",
+        table.add_row(str(h.index), Text(h.status.value, style=STATUS_STYLE[h.status]), where, Text(io if io != "- / -" else ""),
                       decision, Text(clean(policy)), style=style)
     console.print(table)
 
@@ -142,13 +148,13 @@ def render_trace(console: Console, result: TraceResult, *, verbose: bool = False
 
 def _footer(console: Console, result: TraceResult) -> None:
     banner = Text(f" {result.outcome.value} ", style=OUTCOME_STYLE[result.outcome])
-    banner.append(f"  {result.reason}")
+    banner.append(clean(f"  {result.reason}"))
     console.print(banner)
     for w in result.warnings:
-        console.print(Text(f"  ! {w}", style="yellow"))
+        console.print(Text(clean(f"  ! {w}"), style="yellow"))
 
 
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")  # incl. C1 controls such as CSI (0x9b)
 
 
 def clean(text: str) -> str:

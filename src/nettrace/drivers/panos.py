@@ -526,8 +526,16 @@ def parse_policy_match(root: Any) -> tuple[str | None, str | None]:
     if line:
         m = re.search(r'"([^"]+?)(?:;\s*index:\s*\d+)?"', line)
         a = re.search(r"\baction\s+([\w-]+);", line)
-        return (m.group(1) if m else None), (a.group(1) if a else None)
-    return None, None
+        if m:
+            return m.group(1), (a.group(1) if a else None)
+        if re.search(r"\bno\b.*\b(?:match|matching|rule)", line, re.I):
+            return None, None  # documented no-match text
+        raise DeviceError(f"policy-match reply not understood: {line.strip()[:120]!r}")
+    result = root.find("result")
+    if result is not None and (len(result) == 0 and not (result.text or "").strip()
+                               or (result.find("rules") is not None and len(result.find("rules")) == 0)):
+        return None, None  # explicit empty result / empty <rules/>: no rule matched
+    raise DeviceError("policy-match reply not understood (no <rules>, empty <result> or no-match message)")
 
 
 @dataclass
