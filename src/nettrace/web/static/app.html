@@ -15,7 +15,7 @@
 @media (prefers-color-scheme:dark){:root{--line:#2c3a4e;--text:#e6ecf4;--muted:#a3b2c6;--accent:#8ec5ff;--focus:#8ec5ff;--panel:#161d29;--bg:#0e131b;
 --soft:#1d2736;--sel:#1f3552;--code:#0f1720;--t-pass:#4ade80;--t-block:#ff8f87;--t-warn:#fbbf24;--t-unk:#c4a8ff;--t-info:#7cc0ff;
 --chip:#212c3d;--chipline:#33445c;--note:#1b2433}}
-#ws,#pmview{--text:#1b2430;--muted:#566478;--line:#cfd8e3;--panel:#fff;--accent:#1d5fbf;--focus:#1d5fbf;--t-pass:#157a43;--t-block:#c62828;--t-warn:#8a5a00;--t-unk:#6d3fc0;--t-info:#1f62a8;color:#1b2430}
+#ws,#pmview{--text:#1b2430;--muted:#566478;--line:#cfd8e3;--soft:#eef2f7;--panel:#fff;--accent:#1d5fbf;--focus:#1d5fbf;--t-pass:#157a43;--t-block:#c62828;--t-warn:#8a5a00;--t-unk:#6d3fc0;--t-info:#1f62a8;color:#1b2430}
 /* ===== 2. layout ===== */
 *{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden}
 body{font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;color:var(--text);background:var(--bg);
@@ -608,7 +608,16 @@ function goto(k, animate = true){
   revealRow($$("#events tr.ev")[k], "nearest");
   $("#stepinfo").textContent = `step ${k + 1} / ${S.steps.length}`;
   const st = S.steps[k];
+  centerPathMap(st.hop ? st.hop.index : null);
   if (st.hop) { selectHop(st.hop.index, false); } else showFinal();
+}
+// The path map is at least 900 px wide; in a narrower panel keep the current hop (and the blocking device) in view.
+function centerPathMap(hopIndex){
+  const box = $("#pmview"); if (!box || box.scrollWidth <= box.clientWidth) return;
+  const el = hopIndex == null ? null : box.querySelector(`.node[data-hop="${hopIndex}"]`) || box.querySelector(`[data-hop="${hopIndex}"]`);
+  if (!el) { box.scrollLeft = box.scrollWidth; return; }
+  const b = el.getBoundingClientRect(), v = box.getBoundingClientRect();
+  box.scrollLeft += (b.left + b.width / 2) - (v.left + v.width / 2);
 }
 function play(){
   if (!S.entry || RM.matches) return;
@@ -808,7 +817,8 @@ async function refreshHistory(){
 
 /* ===== M. view switching + keyboard + startup ===== */
 function setView(v){ S.view = v; setPressed("#tabs .tab", "view", v);
-  $("#pmview").style.display = v === "pm" ? "block" : "none"; $("#canvas").style.display = v === "topo" ? "" : "none"; $("#tools").style.display = v === "topo" ? "" : "none"; $("#hint").style.display = v === "topo" ? "" : "none"; }
+  $("#pmview").style.display = v === "pm" ? "block" : "none"; $("#canvas").style.display = v === "topo" ? "" : "none"; $("#tools").style.display = v === "topo" ? "" : "none"; $("#hint").style.display = v === "topo" ? "" : "none";
+  if (v === "pm" && S.steps && S.steps.length) { const st = S.steps[S.k != null ? S.k : S.steps.length - 1]; centerPathMap(st && st.hop ? st.hop.index : null); } }
 $$("#tabs .tab").forEach(t => t.onclick = () => setView(t.dataset.view));
 $$("#itabs button").forEach(b => b.onclick = () => setTab(b.dataset.tab));
 $("#skip").onclick = e => { e.preventDefault(); $("#ws").focus(); };
