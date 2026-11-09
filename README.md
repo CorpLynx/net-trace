@@ -129,6 +129,20 @@ python3 -m venv .venv
 .venv/bin/nettrace --help        # or activate the venv and run `nettrace`
 ```
 
+For a reproducible install, use the hashed lockfile (every dependency pinned, including transitive ones):
+
+```bash
+.venv/bin/pip install --require-hashes --no-deps -r requirements.lock
+.venv/bin/pip install --no-deps -e .
+```
+
+To refresh the lockfile and check it for known vulnerabilities (use a separate venv for the tools):
+
+```bash
+pip-compile --generate-hashes --strip-extras -o requirements.lock pyproject.toml   # slow: hashes every wheel
+pip-audit -r requirements.lock --require-hashes --disable-pip
+```
+
 ## Configure
 
 ### 1. Inventory
