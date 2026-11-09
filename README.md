@@ -43,9 +43,16 @@ hop list and inspector show the evidence behind each verdict.
 
 ![nettrace web UI: a blocked trace](docs/demo-ui.png)
 
-A passing trace plays as a packet flow along the path (Space plays or pauses, arrows step, `R` replays):
+Every trace plays as a packet flow along the path: streams of packets leave the source and move hop by hop to the
+destination, coloured by the status of the hop they leave (green pass, amber warn or unknown, red block). A
+blocked flow stops at the device that denied it, which is marked "blocked here". Below, the "DC user → prod web" scenario at 2x
+speed, with the hop list following along:
 
-![packet flow animation mid-trace](docs/demo-ui-flow.png)
+![Animated packet flow: DC user to prod web across the core router, the DC firewall, the VPN, the Transit Gateway and the prod VPC](docs/demo-packet-flow.gif)
+
+Controls: Space plays or pauses, ← → step, Home and End jump to the first and last hop, `R` replays, and the
+speed menu offers 0.5x, 1x and 2x. With reduced motion set in the operating system, nothing auto-plays and the
+step controls still work.
 
 **The demo lab** is a simulated hybrid network built to resemble a mixed Cisco / Palo Alto / Prisma
 Access / AWS environment:
