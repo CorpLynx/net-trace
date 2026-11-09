@@ -46,3 +46,11 @@ a.json
 a.svg
 ticket-*.html
 ticket-*.svg
+
+# local lab kit (Terraform state and variables, CML configs, notes); never committed
+lab/
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+crash.log
